@@ -1,14 +1,17 @@
 {
-	"geode": "5.11.2",
+	"geode": "5.0.0-beta.1",
 	"gd": {
 		"win": "2.2081"
 	},
-	"version": "v1.0.0",
-	"id": "LuchX20.rhythm-practice-bar",
+	"version": "1.0.0",
+	"id": "luchx.barra-ritmo-final",
 	"name": "Rhythm Practice Bar",
 	"developer": "LuchX20",
 	"description": "Barra de ritmo vertical (estilo guitar hero) para practicar el timing de clics a partir de una macro de texto.",
 	"tags": ["interface", "utility"],
+	"dependencies": {
+		"geode.node-ids": ">=v1.23.3"
+	},
 	"settings": {
 		"enabled": {
 			"type": "bool",
@@ -19,7 +22,7 @@
 		"macro-file": {
 			"type": "string",
 			"name": "Archivo de macro",
-			"description": "Ruta del .txt con los tiempos. Si es relativa, se busca en la carpeta de guardado del mod (save dir).",
+			"description": "Ruta del .txt con los tiempos. Si es relativa, se busca en la carpeta de guardado del mod.",
 			"default": "macro.txt"
 		},
 		"side": {
@@ -31,7 +34,7 @@
 		"direction": {
 			"type": "string",
 			"name": "Dirección de las notas",
-			"description": "Bajan: aparecen arriba y caen hacia el receptor. Suben: aparecen abajo y suben hacia el receptor.",
+			"description": "Bajan o suben hacia el receptor.",
 			"default": "Bajan",
 			"one-of": ["Bajan", "Suben"]
 		},
@@ -45,7 +48,7 @@
 		},
 		"bar-height": {
 			"type": "int",
-			"name": "Alto de la barra (% de pantalla)",
+			"name": "Alto de la barra (%)",
 			"default": 70,
 			"min": 30,
 			"max": 95,
@@ -54,7 +57,6 @@
 		"lookahead": {
 			"type": "float",
 			"name": "Anticipación (segundos)",
-			"description": "Cuánto tiempo hacia el futuro se muestra. Menor valor = notas más rápidas.",
 			"default": 1.5,
 			"min": 0.5,
 			"max": 5.0,
@@ -63,7 +65,6 @@
 		"tap-threshold": {
 			"type": "int",
 			"name": "Umbral de clic único (ms)",
-			"description": "Si soltar ocurre antes de este tiempo tras presionar, se considera clic único (solo nota verde, sin barra de retención).",
 			"default": 120,
 			"min": 0,
 			"max": 500,
