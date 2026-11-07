@@ -1,15 +1,69 @@
-name: Build Mod
-on: [push, pull_request]
+name: Build Geode Mod
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        config:
-          - os: windows-2022
-            target: Win32
-    runs-on: ${{ matrix.config.os }}
+  build-windows:
+    name: Windows (Win64)
+    runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - uses: geode-sdk/build-geode-mod@a15bdfde360ef3c676d1a6c4295964821a7199c0
+      - uses: actions/checkout@v7
+
+      # Geode v3 y v4 descargan los "bindings" desde la rama main, que hoy ya
+      # apunta a un GD más nuevo. Para que compile el SDK de tu mod.json, se
+      # fija el commit de bindings que existía el día que salió esa versión
+      # de Geode. Para Geode v5 o superior no se fija nada.
+      - name: Elegir bindings compatibles con mod.json
+        id: pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="$(jq -r '.geode' mod.json)"
+          VER="${VER#v}"
+          MAJOR="${VER%%.*}"
+          echo "Geode objetivo en mod.json: $VER"
+
+          if [ "$MAJOR" -ge 5 ]; then
+            echo "Geode v5+: se usan los bindings por defecto."
+            echo "ref=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          WORK="$(mktemp -d)"
+          git clone -q --filter=blob:none --no-checkout https://github.com/geode-sdk/geode.git "$WORK/geode"
+          git clone -q --filter=blob:none --no-checkout https://github.com/geode-sdk/bindings.git "$WORK/bindings"
+
+          if ! DATE="$(git -C "$WORK/geode" log -1 --format=%cI "v$VER" 2>/dev/null)"; then
+            echo "::error::No existe el tag v$VER en geode-sdk/geode. Revisa el campo \"geode\" de mod.json."
+            exit 1
+          fi
+
+          REF="$(git -C "$WORK/bindings" rev-list -1 --before="$DATE" origin/main)"
+          echo "Fecha de Geode v$VER: $DATE"
+          echo "Bindings fijados en: $REF"
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Build the mod
+        id: build
+        uses: geode-sdk/build-geode-mod@main
         with:
-          target: ${{ matrix.config.target }}
+          # Usa la versión del SDK declarada en mod.json ("geode").
+          sdk: given
+          # Geode v3/v4 (y v5) en Windows son 64 bits. No existe "Win32".
+          target: Win64
+          bindings-ref: ${{ steps.pin.outputs.ref }}
+          # Menos variables al compilar un SDK antiguo con una action nueva.
+          use-lto: false
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: rhythm-practice-bar
+          path: ${{ steps.build.outputs.build-output }}/*.geode
