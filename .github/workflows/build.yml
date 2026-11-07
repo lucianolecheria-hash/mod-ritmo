@@ -6,7 +6,7 @@ jobs:
       matrix:
         config:
           - os: windows-latest
-            target: Win64
+            target: Win32
     runs-on: ${{ matrix.config.os }}
     steps:
       - uses: actions/checkout@v4
