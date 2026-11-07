@@ -7,7 +7,7 @@
 	"id": "luchx.barra-ritmo-final",
 	"name": "Rhythm Practice Bar",
 	"developer": "LuchX20",
-	"description": "Barra de ritmo vertical (estilo guitar hero) para practicar el timing de clics a partir de una macro de texto.",
+	"description": "Barra de ritmo vertical (estilo guitar hero) para practicar el timing de clics a partir de una macro de Mega Hack.",
 	"tags": ["interface", "utility"],
 	"dependencies": {
 		"geode.node-ids": ">=v1.23.3"
@@ -22,8 +22,17 @@
 		"macro-file": {
 			"type": "string",
 			"name": "Archivo de macro",
-			"description": "Ruta del .txt con los tiempos. Si es relativa, se busca en la carpeta de guardado del mod (save dir).",
+			"description": "Ruta de la macro (.mhr.json de Mega Hack o texto plano). Si es relativa, se busca en la carpeta de guardado del mod (save dir).",
 			"default": "macro.txt"
+		},
+		"macro-fps": {
+			"type": "float",
+			"name": "FPS/TPS de la macro",
+			"description": "Para convertir frames a segundos. 0 = automático (usa el valor que traiga el archivo; si no trae ninguno, 240).",
+			"default": 0.0,
+			"min": 0.0,
+			"max": 1000.0,
+			"control": { "input": true }
 		},
 		"side": {
 			"type": "string",
@@ -75,6 +84,7 @@
 		"offset": {
 			"type": "int",
 			"name": "Desfase de sincronización (ms)",
+			"description": "Positivo = las notas llegan más tarde. Negativo = más temprano.",
 			"default": 0,
 			"min": -500,
 			"max": 500,
