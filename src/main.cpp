@@ -7,9 +7,20 @@
  * - Al presionar el salto (P1) el receptor destella en verde; al soltar, en celeste.
  * - Cada clic/soltar se juzga contra la macro: Perfecto / Muy Bien / Bien / Temprano / Tarde,
  *   y una nota que se pasa sin clic cuenta como Fallo.
+ * - Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor): CERO texturas del juego.
  * - Ajustes "bar-width", "bar-height" y "bg-opacity" del mod.json (o desde el boton
  *   "Ritmo" del menu de pausa, en tiempo real).
+ * - "Velocidad" (scroll speed) en el popup "Ritmo", de 20% a 400% y en vivo: mas rapido = las
+ *   notas viajan mas rapido y quedan mas separadas; mas lento = quedan mas pegadas. Se guarda
+ *   como valor guardado del mod (no hace falta tocar mod.json); el ajuste "lookahead" del
+ *   mod.json sigue siendo la base (100%).
+ * - Macros por NOMBRE: escribis "macro.gdr2" y el mod lo busca solo (carpeta del mod,
+ *   megahack/, Geode/mods/*, y el resto de la carpeta del juego). Tambien podes dar una ruta completa.
  * - Biblioteca de macros guardada en <save dir>/macro-library.txt (una ruta por linea).
+ *   Se agregan desde el popup "Ritmo" (campo de texto + boton "Agregar").
+ * - "Modo Experimento": oculta TODO el nivel (fondo, cubo, obstaculos) y deja solo la barra.
+ *   El nivel sigue corriendo y la musica sigue sonando. Se activa desde el menu de pausa.
+ *   (Se reinicia a "apagado" cada vez que abris el juego.)
  *
  * Formatos que lee parseMacro():
  *   - GDR2 binario (.gdr2, formato de maxnut/GDReplayFormat): se lee directo de los bytes
@@ -34,8 +45,10 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 using namespace geode::prelude;
@@ -627,6 +640,17 @@ constexpr double kLinger = 0.06;
 constexpr size_t kMaxSlots = 384;
 constexpr size_t kMaxTrail = 64;
 
+// Velocidad de desplazamiento de las notas (en %). 100% = el "lookahead" del mod.json.
+constexpr int64_t kSpeedMin = 20;
+constexpr int64_t kSpeedMax = 400;
+constexpr int64_t kSpeedDef = 100;
+
+// Esquina del menu de pausa donde van los botones del mod:
+// 0 = arriba-izquierda (por defecto), 1 = arriba-derecha, 2 = abajo-izquierda, 3 = abajo-derecha.
+#ifndef RPB_PAUSE_CORNER
+#define RPB_PAUSE_CORNER 0
+#endif
+
 // bigFont.fnt de GD no trae el signo de apertura de exclamacion. Ponelo en 1 si tu fuente lo incluye.
 #ifndef RPB_INVERTED_MARKS
 #define RPB_INVERTED_MARKS 0
@@ -639,12 +663,20 @@ constexpr char const* kTxtPerfect = "Perfecto!";
 constexpr char const* kTxtMiss = "Fallo!";
 #endif
 
+const ccColor3B kColWhite{255, 255, 255};
+const ccColor3B kColGreen{60, 255, 100};
+const ccColor3B kColCyan{80, 220, 255};
+const ccColor3B kColRed{255, 70, 70};
+
+// Modo Experimento: solo vive en esta sesion del juego (se apaga al reiniciar GD).
+bool g_experiment = false;
+
 struct Config {
     bool enabled = true;
     std::string macroFile = "macro.txt";
     float barWidthPct = 60.f;   // "bar-width": largo de la barra, % del ancho de pantalla
     float barThickness = 44.f;  // "bar-height": grosor de la barra en px
-    double lookahead = 1.5;     // segundos
+    double lookahead = 1.5;     // segundos que tarda una nota en llegar al receptor (ya con la velocidad aplicada)
     double offset = 0.0;        // segundos
     float bgOpacity = 0.35f;    // "bg-opacity": 0..1
     rpb::ParserSettings parser;
@@ -658,14 +690,20 @@ Config loadConfig() {
     c.barWidthPct = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bar-width"), 10, 100));
     c.barThickness = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bar-height"), 16, 200));
     c.bgOpacity = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bg-opacity"), 0, 100)) / 100.f;
-    c.lookahead = std::max(0.1, mod->getSettingValue<double>("lookahead"));
+    // Velocidad: mas % = la nota recorre la barra en menos tiempo = notas mas separadas en pantalla.
+    const double speed = static_cast<double>(std::clamp<int64_t>(
+                             mod->getSavedValue<int64_t>("scroll-speed", kSpeedDef), kSpeedMin, kSpeedMax)) /
+                         100.0;
+    const double baseLookahead = std::max(0.1, mod->getSettingValue<double>("lookahead"));
+    c.lookahead = std::max(0.05, baseLookahead / speed);
     c.offset = mod->getSettingValue<int64_t>("offset") / 1000.0;
     c.parser.tapThreshold = mod->getSettingValue<int64_t>("tap-threshold") / 1000.0;
     c.parser.fps = mod->getSettingValue<double>("macro-fps");
     return c;
 }
 
-// Filas del popup: cada una enlaza con un ajuste del mod.json.
+// Filas del popup con botones "-" / "+". `saved` = false: enlaza con un ajuste del mod.json;
+// `saved` = true: se guarda como valor guardado del mod (no necesita entrada en mod.json).
 struct SettingRow {
     char const* label;
     char const* key;
@@ -674,13 +712,31 @@ struct SettingRow {
     int64_t step;
     int64_t def;
     char const* suffix;
+    bool saved;
 };
 
 constexpr SettingRow kRows[] = {
-    {"Largo", "bar-width", 10, 100, 5, 60, "%"},
-    {"Grosor", "bar-height", 16, 120, 4, 44, "px"},
-    {"Fondo", "bg-opacity", 0, 100, 5, 35, "%"},
+    {"Largo", "bar-width", 10, 100, 5, 60, "%", false},
+    {"Grosor", "bar-height", 16, 120, 4, 44, "px", false},
+    {"Fondo", "bg-opacity", 0, 100, 5, 60, "%", false},
+    {"Velocidad", "scroll-speed", kSpeedMin, kSpeedMax, 10, kSpeedDef, "%", true},
 };
+constexpr size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
+
+int64_t rowValue(SettingRow const& row) {
+    auto mod = Mod::get();
+    if (row.saved) return mod->getSavedValue<int64_t>(row.key, row.def);
+    return mod->getSettingValue<int64_t>(row.key);
+}
+
+void setRowValue(SettingRow const& row, int64_t v) {
+    auto mod = Mod::get();
+    if (row.saved) {
+        (void)mod->setSavedValue<int64_t>(row.key, v);
+    } else {
+        (void)mod->setSettingValue<int64_t>(row.key, v);
+    }
+}
 
 // ------------------------------------------------------------ archivos ----
 
@@ -691,12 +747,6 @@ std::string pathToUtf8(fs::path const& p) {
 
 fs::path utf8ToPath(std::string const& s) {
     return fs::path(std::u8string(reinterpret_cast<char8_t const*>(s.data()), s.size()));
-}
-
-fs::path resolveMacroPath(std::string const& name) {
-    fs::path p = utf8ToPath(name);
-    if (p.is_relative()) p = Mod::get()->getSaveDir() / p;  // carpeta de guardado del mod
-    return p;
 }
 
 bool readFile(fs::path const& p, std::string& out) {
@@ -725,6 +775,156 @@ std::string macroKey(Config const& c) {
     return c.macroFile + "|" + std::to_string(c.parser.fps) + "|" + std::to_string(c.parser.tapThreshold);
 }
 
+// ------------------------------------------------- buscador de macros ----
+// El jugador escribe solo el nombre ("macro.gdr2") y se busca en este orden:
+//   1. ruta completa (si la escribio entera)
+//   2. acceso directo <raiz>/<nombre> en cada raiz
+//   3. busqueda recursiva por nombre de archivo en cada raiz:
+//        carpeta de guardado del mod -> <juego>/megahack -> Geode/mods (otros bots) -> todo <juego>
+// Sin extension ("macro") tambien prueba macro.gdr2, macro.mhr.json, macro.json y macro.txt.
+// El resultado se guarda en cache para no volver a recorrer carpetas.
+
+constexpr char const* kMacroExts[] = {".gdr2", ".mhr.json", ".json", ".txt"};
+
+bool hasMacroExt(std::string const& lowerName) {
+    for (auto e : kMacroExts) {
+        const size_t n = std::strlen(e);
+        if (lowerName.size() > n && lowerName.compare(lowerName.size() - n, n, e) == 0) return true;
+    }
+    return false;
+}
+
+bool nameMatches(std::string const& fileLower, std::string const& wantLower, bool wantHasExt) {
+    if (fileLower == wantLower) return true;
+    if (wantHasExt) return false;
+    if (fileLower.size() <= wantLower.size() ||
+        fileLower.compare(0, wantLower.size(), wantLower) != 0) {
+        return false;
+    }
+    const std::string rest = fileLower.substr(wantLower.size());
+    for (auto e : kMacroExts) {
+        if (rest == e) return true;
+    }
+    return false;
+}
+
+// Carpetas pesadas o inutiles que no vale la pena recorrer.
+bool skipDirName(std::string const& lowerName) {
+    static constexpr char const* kSkip[] = {"resources", "unzipped", "temp", "crashlogs",
+                                            "logs",      "index",    "update", "cache", ".git"};
+    for (auto s : kSkip) {
+        if (lowerName == s) return true;
+    }
+    return false;
+}
+
+std::optional<fs::path> searchTree(fs::path const& root, std::string const& wantLower,
+                                   bool wantHasExt, int maxDepth, size_t& budget) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return std::nullopt;
+
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+    const fs::recursive_directory_iterator end;
+    while (!ec && it != end) {
+        if (budget == 0) return std::nullopt;
+        --budget;
+
+        std::error_code e2;
+        const auto& entry = *it;
+        if (entry.is_directory(e2)) {
+            if (it.depth() + 1 >= maxDepth ||
+                skipDirName(rpb::lower(pathToUtf8(entry.path().filename())))) {
+                it.disable_recursion_pending();
+            }
+        } else if (entry.is_regular_file(e2)) {
+            if (nameMatches(rpb::lower(pathToUtf8(entry.path().filename())), wantLower, wantHasExt)) {
+                return entry.path();
+            }
+        }
+        it.increment(ec);
+    }
+    return std::nullopt;
+}
+
+struct SearchRoot {
+    fs::path path;
+    int depth;
+};
+
+std::vector<SearchRoot> searchRoots() {
+    std::vector<SearchRoot> roots;
+    const fs::path save = Mod::get()->getSaveDir();
+    const fs::path game = dirs::getGameDir();
+    roots.push_back({save, 4});                 // carpeta de guardado de este mod
+    roots.push_back({game / "megahack", 8});    // macros de Mega Hack (megahack/replays, ...)
+    roots.push_back({save.parent_path(), 4});   // Geode/mods/*: macros de otros bots
+    roots.push_back({game, 6});                 // el resto de la carpeta del juego
+    return roots;
+}
+
+std::unordered_map<std::string, fs::path>& macroCache() {
+    static std::unordered_map<std::string, fs::path> cache;
+    return cache;
+}
+
+// allowScan = false: solo resuelve rapido (ruta completa, acceso directo o cache), sin recorrer carpetas.
+// forceRescan = true: ignora la cache.
+std::optional<fs::path> findMacro(std::string const& rawName, bool allowScan = true,
+                                  bool forceRescan = false) {
+    const std::string name = rpb::trim(rawName);
+    if (name.empty()) return std::nullopt;
+
+    auto& cache = macroCache();
+    const std::string cacheKey = rpb::lower(name);
+    std::error_code ec;
+
+    if (forceRescan) {
+        cache.erase(cacheKey);
+    } else if (auto c = cache.find(cacheKey); c != cache.end()) {
+        if (fs::is_regular_file(c->second, ec)) return c->second;
+        cache.erase(c);
+    }
+
+    auto remember = [&](fs::path p) -> std::optional<fs::path> {
+        cache[cacheKey] = p;
+        return p;
+    };
+
+    const fs::path wanted = utf8ToPath(name);
+    const std::string wantedFile = rpb::lower(pathToUtf8(wanted.filename()));
+    if (wantedFile.empty()) return std::nullopt;
+    const bool hasExt = hasMacroExt(wantedFile);
+
+    // 1) ruta completa
+    if (wanted.is_absolute() && fs::is_regular_file(wanted, ec)) return remember(wanted);
+
+    const auto roots = searchRoots();
+
+    // 2) acceso directo (el nombre puede traer subcarpetas: "mis macros/macro.gdr2")
+    for (auto const& root : roots) {
+        const fs::path base = wanted.is_absolute() ? wanted : root.path / wanted;
+        if (fs::is_regular_file(base, ec)) return remember(base);
+        if (!hasExt) {
+            for (auto ext : kMacroExts) {
+                fs::path withExt = base;
+                withExt += ext;
+                if (fs::is_regular_file(withExt, ec)) return remember(withExt);
+            }
+        }
+    }
+    if (!allowScan) return std::nullopt;
+
+    // 3) busqueda por nombre de archivo, sin importar la subcarpeta
+    size_t budget = 80000;
+    for (auto const& root : roots) {
+        if (auto p = searchTree(root.path, wantedFile, hasExt, root.depth, budget)) {
+            return remember(*p);
+        }
+        if (budget == 0) break;
+    }
+    return std::nullopt;
+}
+
 struct LoadResult {
     rpb::Macro macro;
     bool ok = false;
@@ -734,15 +934,14 @@ struct LoadResult {
 
 LoadResult loadMacro(Config const& cfg) {
     LoadResult r;
-    const auto path = resolveMacroPath(cfg.macroFile);
-    const auto shown = pathToUtf8(path);
-
-    std::error_code ec;
-    if (!fs::exists(path, ec)) {
-        log::warn("Rhythm Bar: no se encontro la macro en {}", shown);
-        r.error = "no se encontro el archivo de macro";
+    const auto found = findMacro(cfg.macroFile);
+    if (!found) {
+        log::warn("Rhythm Bar: no se encontro la macro \"{}\"", cfg.macroFile);
+        r.error = "no se encontro \"" + asciiOnly(cfg.macroFile, 40) + "\"";
         return r;
     }
+    const auto path = *found;
+    const auto shown = pathToUtf8(path);
 
     std::string text;
     if (!readFile(path, text)) {
@@ -840,7 +1039,7 @@ JudgeStyle styleOf(Judge j) {
         case Judge::Late: return {"Tarde", ccColor3B{190, 130, 255}};
         case Judge::Miss: break;
     }
-    return {kTxtMiss, ccColor3B{255, 70, 70}};
+    return {kTxtMiss, kColRed};
 }
 
 // d = tiempo del jugador - tiempo de la nota (negativo = el jugador se adelanto)
@@ -853,6 +1052,13 @@ Judge classify(double d) {
 }
 
 enum NoteState : uint8_t { NotePending, NoteHit, NoteMissed, NoteSkipped };
+
+// Rectangulo solido (sin texturas): (x, y) = esquina inferior izquierda dentro del padre.
+CCLayerColor* makeSolid(ccColor4B color, float w, float h, float x = 0.f, float y = 0.f) {
+    auto node = CCLayerColor::create(color, w, h);
+    node->setPosition({x, y});
+    return node;
+}
 
 // ------------------------------------------------------------ barra ----
 
@@ -876,6 +1082,11 @@ protected:
         bool open;
     };
 
+    struct HiddenNode {
+        Ref<CCNode> node;
+        bool wasVisible;
+    };
+
     inline static RhythmBar* s_instance = nullptr;
 
     rpb::Macro m_macro;
@@ -891,6 +1102,7 @@ protected:
     CCNode* m_layer = nullptr;
     CCLayerColor* m_flashG = nullptr;
     CCLayerColor* m_flashB = nullptr;
+    CCLayerColor* m_line = nullptr;
     CCLabelBMFont* m_label = nullptr;
     std::vector<CCLayerColor*> m_pool;
     size_t m_used = 0;
@@ -901,6 +1113,11 @@ protected:
     double m_clock = 0.0;
     double m_labelDieAt = 0.0;
     float m_pollTimer = 0.f;
+
+    // Modo Experimento
+    CCLayerColor* m_blackout = nullptr;  // pantalla negra detras de la UI (la posee m_uiLayer)
+    std::vector<HiddenNode> m_hidden;    // nodos del nivel ocultados, con su visibilidad original
+    bool m_levelHidden = false;
 
     bool init(rpb::Macro macro, Config const& cfg) {
         if (!CCNode::init()) return false;
@@ -935,6 +1152,11 @@ public:
         if (s_instance) s_instance->applyConfig(true);
     }
 
+    // Lo llama el boton "Modo Experimento" del menu de pausa.
+    static void applyExperimentNow() {
+        if (s_instance) s_instance->syncLevelVisibility();
+    }
+
     // Lee los ajustes y reconstruye lo que haga falta (distancias, macro).
     void applyConfig(bool force) {
         const Config c = loadConfig();
@@ -957,6 +1179,10 @@ public:
                 Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
             }
         }
+
+        // Redibuja ya mismo (el juego puede estar en pausa y no llamar a update).
+        if (c.enabled && (relayout || macroChanged)) this->refresh(this->currentNow());
+        this->syncLevelVisibility();
     }
 
     // Entrada del jugador (P1, salto) tal como la entrega el juego en cada paso de fisica.
@@ -991,6 +1217,7 @@ public:
             m_pollTimer = 0.f;
             this->applyConfig(false);
         }
+        this->syncLevelVisibility();
         if (!m_cfg.enabled) return;
 
         // offset positivo = las notas llegan mas tarde
@@ -1004,13 +1231,89 @@ public:
         }
     }
 
+    // ---- Modo Experimento ----
+    // Dos capas de seguridad: (1) una pantalla negra opaca detras de la UI y por encima del nivel,
+    // (2) todos los hijos del PlayLayer (fondo, suelo, objetos, cubo...) se ponen invisibles.
+    // El nivel sigue corriendo y la musica sigue sonando: solo se deja de dibujar.
+    void syncLevelVisibility() {
+        const bool want = m_cfg.enabled && g_experiment;
+        if (!want && !m_levelHidden) return;
+
+        auto pl = PlayLayer::get();
+        if (!pl) return;
+
+        if (want) {
+            this->showBlackout(true);
+            this->hideLevelNodes(pl);
+            m_levelHidden = true;
+        } else {
+            this->showBlackout(false);
+            this->restoreLevelNodes();
+            m_levelHidden = false;
+        }
+    }
+
 private:
+    double currentNow() {
+        auto pl = PlayLayer::get();
+        return pl ? currentLevelTime(pl) - m_cfg.offset : m_lastNow;
+    }
+
     void setMacro(rpb::Macro macro) {
         m_macro = std::move(macro);
         m_press.assign(m_macro.presses);
         m_release.assign(m_macro.releases);
         m_trail.clear();
         m_synced = false;
+    }
+
+    // ---- modo experimento (detalle) ----
+
+    void showBlackout(bool on) {
+        if (on) {
+            if (!m_blackout) {
+                auto parent = this->getParent();
+                if (!parent) return;
+                const auto win = CCDirector::get()->getWinSize();
+                m_blackout = makeSolid(ccColor4B{0, 0, 0, 255}, win.width, win.height);
+                parent->addChild(m_blackout, -100);  // detras de todo lo demas de la UI
+            }
+            m_blackout->setVisible(true);
+        } else if (m_blackout) {
+            m_blackout->setVisible(false);
+        }
+    }
+
+    bool keepsVisible(PlayLayer* pl, CCNode* n) const {
+        return n == static_cast<CCNode*>(pl->m_uiLayer) || n == this->getParent() ||
+               n == static_cast<CCNode const*>(m_blackout) ||
+               typeinfo_cast<FLAlertLayer*>(n) != nullptr ||
+               typeinfo_cast<GJDropDownLayer*>(n) != nullptr;  // pantalla de nivel completado, etc.
+    }
+
+    void hideLevelNodes(PlayLayer* pl) {
+        auto children = pl->getChildren();
+        if (!children) return;
+        for (auto child : CCArrayExt<CCNode*>(children)) {
+            if (!child || this->keepsVisible(pl, child)) continue;
+
+            bool known = false;
+            for (auto const& h : m_hidden) {
+                if (h.node.data() == child) {
+                    known = true;
+                    break;
+                }
+            }
+            if (!known) m_hidden.push_back({Ref<CCNode>(child), child->isVisible()});
+            if (child->isVisible()) child->setVisible(false);
+        }
+    }
+
+    void restoreLevelNodes() {
+        for (auto& h : m_hidden) {
+            if (h.node.data()) h.node->setVisible(h.wasVisible);
+        }
+        m_hidden.clear();
     }
 
     // ---- layout ----
@@ -1022,7 +1325,7 @@ private:
         m_label = nullptr;
 
         const auto win = CCDirector::get()->getWinSize();
-        const float margin = 8.f;
+        const float margin = 10.f;
         m_w = std::min(win.width * m_cfg.barWidthPct / 100.f, win.width - 2.f * margin);
         m_h = m_cfg.barThickness;
         m_recX = m_w * kReceptorFrac;
@@ -1030,42 +1333,53 @@ private:
         this->setContentSize({m_w, m_h});
         this->setPosition({(win.width - m_w) / 2.f, margin});  // abajo, centrada
 
-        // fondo translucido
+        // fondo solido
         const auto bgAlpha = static_cast<GLubyte>(std::clamp(m_cfg.bgOpacity, 0.f, 1.f) * 255.f);
-        auto bg = CCLayerColor::create(ccColor4B{0, 0, 0, bgAlpha}, m_w, m_h);
-        this->addChild(bg, 0);
+        this->addChild(makeSolid(ccColor4B{14, 16, 30, bgAlpha}, m_w, m_h), 0);
 
         // zona de acierto (ventana "Bien") alrededor del receptor
         const float half = static_cast<float>(kGoodWin * m_recX / m_cfg.lookahead);
-        auto zone = CCLayerColor::create(ccColor4B{255, 255, 255, 22}, half * 2.f, m_h);
-        zone->setPosition({m_recX - half, 0.f});
-        this->addChild(zone, 0);
+        this->addChild(makeSolid(ccColor4B{255, 255, 255, 28}, half * 2.f, m_h, m_recX - half, 0.f), 0);
 
         m_layer = CCNode::create();
         this->addChild(m_layer, 1);
 
         // destellos del receptor: verde (exterior, al presionar) y celeste (interior, al soltar)
-        m_flashG = CCLayerColor::create(ccColor4B{60, 255, 100, 0}, 30.f, m_h);
-        m_flashG->setPosition({m_recX - 15.f, 0.f});
+        m_flashG = makeSolid(ccColor4B{60, 255, 100, 0}, 34.f, m_h, m_recX - 17.f, 0.f);
         this->addChild(m_flashG, 2);
 
-        m_flashB = CCLayerColor::create(ccColor4B{80, 220, 255, 0}, 14.f, m_h);
-        m_flashB->setPosition({m_recX - 7.f, 0.f});
+        m_flashB = makeSolid(ccColor4B{80, 220, 255, 0}, 16.f, m_h, m_recX - 8.f, 0.f);
         this->addChild(m_flashB, 3);
 
-        // linea receptora (timing line)
-        auto line = CCLayerColor::create(ccColor4B{255, 255, 255, 230}, 3.f, m_h);
-        line->setPosition({m_recX - 1.5f, 0.f});
-        this->addChild(line, 4);
+        // borde de la barra: 4 franjas finas, siempre visibles aunque el fondo sea transparente
+        const float b = 2.f;
+        const ccColor4B edge{140, 210, 255, 220};
+        this->addChild(makeSolid(edge, m_w, b, 0.f, 0.f), 5);
+        this->addChild(makeSolid(edge, m_w, b, 0.f, m_h - b), 5);
+        this->addChild(makeSolid(edge, b, m_h, 0.f, 0.f), 5);
+        this->addChild(makeSolid(edge, b, m_h, m_w - b, 0.f), 5);
+
+        // linea receptora (timing line): sobresale un poco por arriba y por abajo
+        m_line = makeSolid(ccColor4B{255, 255, 255, 255}, 4.f, m_h + 10.f, m_recX - 2.f, -5.f);
+        this->addChild(m_line, 6);
     }
 
     // ---- destellos ----
 
     void flashDown() {
-        if (!m_flashG) return;
-        m_flashG->stopAllActions();
-        m_flashG->setOpacity(255);
-        m_flashG->runAction(CCFadeTo::create(0.10f, 110));  // queda un brillo mientras se mantiene
+        if (m_flashG) {
+            m_flashG->stopAllActions();
+            m_flashG->setOpacity(255);
+            m_flashG->runAction(CCFadeTo::create(0.10f, 110));  // queda un brillo mientras se mantiene
+        }
+        if (m_flashB) {
+            m_flashB->stopAllActions();
+            m_flashB->setOpacity(0);
+        }
+        if (m_line) {
+            m_line->stopAllActions();
+            m_line->setColor(kColGreen);  // verde brillante mientras el boton esta apretado
+        }
     }
 
     void flashUp() {
@@ -1077,6 +1391,11 @@ private:
             m_flashB->stopAllActions();
             m_flashB->setOpacity(255);
             m_flashB->runAction(CCFadeTo::create(0.22f, 0));
+        }
+        if (m_line) {
+            m_line->stopAllActions();
+            m_line->setColor(kColCyan);  // celeste al soltar, vuelve a blanco
+            m_line->runAction(CCTintTo::create(0.25f, 255, 255, 255));
         }
     }
 
@@ -1149,6 +1468,14 @@ private:
             m_flashG->stopAllActions();
             m_flashG->setOpacity(0);
         }
+        if (m_flashB) {
+            m_flashB->stopAllActions();
+            m_flashB->setOpacity(0);
+        }
+        if (m_line) {
+            m_line->stopAllActions();
+            m_line->setColor(kColWhite);
+        }
         m_synced = true;
         m_lastNow = now;
     }
@@ -1202,7 +1529,7 @@ private:
             ccColor3B c = color;
             GLubyte a = 255;
             if (st == NoteMissed) {
-                c = ccColor3B{255, 70, 70};
+                c = kColRed;
                 a = 200;
             } else if (st == NoteSkipped) {
                 a = 110;
@@ -1223,7 +1550,7 @@ private:
         const float lo = std::clamp(xb, 0.f, m_w);
         const float hi = std::clamp(xa, 0.f, m_w);
         const float bh = m_h * 0.5f;
-        slot(ccColor3B{60, 255, 100}, 110, lo, (m_h - bh) / 2.f, hi - lo, bh);
+        slot(kColGreen, 110, lo, (m_h - bh) / 2.f, hi - lo, bh);
     }
 
     // Huella de lo que el jugador esta haciendo: franja delgada abajo, translucida,
@@ -1254,8 +1581,8 @@ private:
         }
 
         // Las notas van despues para quedar dibujadas encima de las barras.
-        this->drawNotes(m_press, now, ccColor3B{60, 255, 100});     // verde: clic / inicio de hold
-        this->drawNotes(m_release, now, ccColor3B{80, 220, 255});   // celeste: soltar
+        this->drawNotes(m_press, now, kColGreen);    // verde: clic / inicio de hold
+        this->drawNotes(m_release, now, kColCyan);   // celeste: soltar
         this->drawTrail(now);
 
         for (size_t i = m_used; i < m_pool.size(); ++i) m_pool[i]->setVisible(false);
@@ -1268,9 +1595,10 @@ class RhythmPopup : public geode::Popup {
 protected:
     static constexpr size_t kPerPage = 3;
 
-    CCLabelBMFont* m_values[3] = {nullptr, nullptr, nullptr};
+    CCLabelBMFont* m_values[kRowCount] = {};
     CCLabelBMFont* m_pageLabel = nullptr;
     CCLabelBMFont* m_activeLabel = nullptr;
+    TextInput* m_input = nullptr;
     std::vector<CCNode*> m_listNodes;
     std::vector<std::string> m_library;
     size_t m_page = 0;
@@ -1307,28 +1635,41 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(460.f, 260.f)) return false;
+        if (!Popup::init(460.f, 330.f)) return false;
         this->setTitle("Barra de Ritmo");
 
-        // columna izquierda: dimensiones en tiempo real
         const ccColor3B gold{255, 220, 90};
-        this->addLabel("Dimensiones", -125.f, 82.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
-        for (int i = 0; i < 3; ++i) {
-            const float y = 52.f - 32.f * static_cast<float>(i);
+
+        // columna izquierda: dimensiones en tiempo real (+ / - estiran la barra solida)
+        this->addLabel("Dimensiones y Velocidad", -125.f, 118.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
+        for (size_t i = 0; i < kRowCount; ++i) {
+            const float y = 90.f - 32.f * static_cast<float>(i);
             this->addLabel(kRows[i].label, -215.f, y, 0.4f, CCPoint{0.f, 0.5f});
-            this->addButton("-", 26, true, -120.f, y, menu_selector(RhythmPopup::onStep), i * 2);
+            this->addButton("-", 26, true, -120.f, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2);
             m_values[i] = this->addLabel("", -80.f, y, 0.4f);
-            this->addButton("+", 26, true, -40.f, y, menu_selector(RhythmPopup::onStep), i * 2 + 1);
+            this->addButton("+", 26, true, -40.f, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2 + 1);
         }
-        this->addButton("Restablecer", 110, false, -125.f, -45.f, menu_selector(RhythmPopup::onReset), 0);
+        this->addButton("Restablecer", 110, false, -125.f, -42.f, menu_selector(RhythmPopup::onReset), 0);
 
         // columna derecha: biblioteca de macros
-        this->addLabel("Biblioteca de Macros", 115.f, 82.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
-        this->addButton("<", 28, false, 55.f, -30.f, menu_selector(RhythmPopup::onPage), 0, 22.f);
-        m_pageLabel = this->addLabel("1/1", 115.f, -30.f, 0.4f);
-        this->addButton(">", 28, false, 175.f, -30.f, menu_selector(RhythmPopup::onPage), 1, 22.f);
-        this->addButton("Guardar Macro", 170, true, 115.f, -64.f, menu_selector(RhythmPopup::onSave), 0, 26.f);
-        m_activeLabel = this->addLabel("", 0.f, -100.f, 0.35f);
+        this->addLabel("Biblioteca de Macros", 115.f, 118.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
+        this->addButton("<", 28, false, 40.f, 4.f, menu_selector(RhythmPopup::onPage), 0, 22.f);
+        m_pageLabel = this->addLabel("1/1", 82.f, 4.f, 0.4f);
+        this->addButton(">", 28, false, 124.f, 4.f, menu_selector(RhythmPopup::onPage), 1, 22.f);
+        this->addButton("Quitar", 70, false, 182.f, 4.f, menu_selector(RhythmPopup::onRemove), 0, 22.f, 0.5f);
+
+        // fila inferior: agregar una macro escribiendo solo su nombre
+        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -74.f, 0.35f,
+                       CCPoint{0.5f, 0.5f}, gold);
+        m_input = TextInput::create(290.f, "ej: macro.gdr2", "bigFont.fnt");
+        m_input->setFilter(
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-()[]+,'&!#@%=/\\:");
+        m_input->setMaxCharCount(120);
+        m_input->setPosition(this->at(m_mainLayer, -60.f, -102.f));
+        m_mainLayer->addChild(m_input, 5);
+        this->addButton("Agregar", 100, true, 145.f, -102.f, menu_selector(RhythmPopup::onAdd), 0, 26.f);
+
+        m_activeLabel = this->addLabel("", 0.f, -136.f, 0.35f);
 
         this->refreshValues();
         this->rebuildList();
@@ -1336,15 +1677,14 @@ protected:
     }
 
     void refreshValues() {
-        auto mod = Mod::get();
-        for (int i = 0; i < 3; ++i) {
-            const auto v = mod->getSettingValue<int64_t>(kRows[i].key);
+        for (size_t i = 0; i < kRowCount; ++i) {
+            const auto v = rowValue(kRows[i]);
             m_values[i]->setString((std::to_string(v) + kRows[i].suffix).c_str());
         }
     }
 
     void refreshActive() {
-        const auto name = asciiOnly(pathToUtf8(resolveMacroPath(loadConfig().macroFile).filename()), 40);
+        const auto name = asciiOnly(pathToUtf8(utf8ToPath(loadConfig().macroFile).filename()), 40);
         m_activeLabel->setString(("Activa: " + name).c_str());
     }
 
@@ -1359,17 +1699,20 @@ protected:
 
         const size_t pages = std::max<size_t>(1, (m_library.size() + kPerPage - 1) / kPerPage);
         m_page = std::min(m_page, pages - 1);
-        const auto activeKey = pathKey(pathToUtf8(resolveMacroPath(loadConfig().macroFile)));
+
+        const auto cfg = loadConfig();
+        const auto activePath = findMacro(cfg.macroFile, false);  // sin recorrer carpetas
+        const auto activeKey = activePath ? pathKey(pathToUtf8(*activePath)) : pathKey(cfg.macroFile);
 
         if (m_library.empty()) {
-            m_listNodes.push_back(this->addLabel("Sin macros guardadas", 115.f, 26.f, 0.35f));
+            m_listNodes.push_back(this->addLabel("Sin macros guardadas", 115.f, 62.f, 0.35f));
         }
         for (size_t k = 0; k < kPerPage; ++k) {
             const size_t i = m_page * kPerPage + k;
             if (i >= m_library.size()) break;
             const auto name = asciiOnly(pathToUtf8(utf8ToPath(m_library[i]).filename()), 22);
             const bool active = pathKey(m_library[i]) == activeKey;  // verde = macro activa
-            const float y = 54.f - 28.f * static_cast<float>(k);
+            const float y = 90.f - 28.f * static_cast<float>(k);
             m_listNodes.push_back(this->addButton(name.c_str(), 170, active, 115.f, y,
                                                   menu_selector(RhythmPopup::onPick),
                                                   static_cast<int>(i), 24.f, 0.5f));
@@ -1385,19 +1728,16 @@ protected:
 
     void onStep(CCObject* sender) {
         const int tag = static_cast<CCNode*>(sender)->getTag();
-        if (tag < 0 || tag >= 6) return;
+        if (tag < 0 || tag >= static_cast<int>(kRowCount) * 2) return;
         const auto& row = kRows[tag / 2];
         const int64_t dir = (tag % 2) ? 1 : -1;
-        auto mod = Mod::get();
-        const int64_t v = std::clamp<int64_t>(mod->getSettingValue<int64_t>(row.key) + dir * row.step,
-                                              row.lo, row.hi);
-        (void)mod->setSettingValue<int64_t>(row.key, v);
-        this->afterSettingsChanged();
+        const int64_t v = std::clamp<int64_t>(rowValue(row) + dir * row.step, row.lo, row.hi);
+        setRowValue(row, v);
+        this->afterSettingsChanged();  // la barra se redibuja ya con el nuevo largo / grosor / velocidad
     }
 
     void onReset(CCObject*) {
-        auto mod = Mod::get();
-        for (auto const& row : kRows) (void)mod->setSettingValue<int64_t>(row.key, row.def);
+        for (auto const& row : kRows) setRowValue(row, row.def);
         this->afterSettingsChanged();
     }
 
@@ -1408,40 +1748,83 @@ protected:
         this->rebuildList();
     }
 
-    // Registra la macro activa (ajuste "macro-file") en la biblioteca.
-    void onSave(CCObject*) {
+    // Busca la macro por nombre, la valida, la agrega a la biblioteca y la activa al instante.
+    // Con el campo vacio registra la macro que esta activa ahora.
+    void onAdd(CCObject*) {
+        std::string name = m_input ? rpb::trim(m_input->getString()) : std::string();
         const auto cfg = loadConfig();
-        const auto path = resolveMacroPath(cfg.macroFile);
+        if (name.empty()) name = cfg.macroFile;
 
-        std::error_code ec;
+        const auto found = findMacro(name, true, true);
+        if (!found) {
+            Notification::create("Rhythm Bar: no se encontro \"" + asciiOnly(name, 32) + "\"",
+                                 NotificationIcon::Error)->show();
+            return;
+        }
+
         std::string text;
-        if (!fs::exists(path, ec) || !readFile(path, text)) {
-            Notification::create("Rhythm Bar: no se encontro la macro activa", NotificationIcon::Error)->show();
+        if (!readFile(*found, text)) {
+            Notification::create("Rhythm Bar: no se pudo leer el archivo", NotificationIcon::Error)->show();
             return;
         }
         rpb::ParseInfo info;
         const auto macro = rpb::parseMacro(text, cfg.parser, info);
         if (!info.error.empty() || macro.presses.empty()) {
-            Notification::create("Rhythm Bar: ese archivo no es una macro valida", NotificationIcon::Warning)->show();
+            const std::string why = info.error.empty() ? std::string("la macro no tiene clics") : info.error;
+            Notification::create("Rhythm Bar: " + why, NotificationIcon::Warning)->show();
             return;
         }
 
         auto list = loadLibrary();
-        const auto stored = pathToUtf8(path);
+        const auto stored = pathToUtf8(*found);
         const auto key = pathKey(stored);
-        for (auto const& e : list) {
-            if (pathKey(e) == key) {
-                Notification::create("Rhythm Bar: la macro ya esta en la biblioteca", NotificationIcon::Info)->show();
+        size_t index = list.size();
+        for (size_t i = 0; i < list.size(); ++i) {
+            if (pathKey(list[i]) == key) {
+                index = i;
+                break;
+            }
+        }
+        if (index == list.size()) {
+            list.push_back(stored);
+            if (!saveLibrary(list)) {
+                Notification::create("Rhythm Bar: no se pudo guardar la biblioteca",
+                                     NotificationIcon::Error)->show();
                 return;
             }
         }
-        list.push_back(stored);
+        m_page = index / kPerPage;
+
+        (void)Mod::get()->setSettingValue<std::string>("macro-file", stored);
+        RhythmBar::refreshNow();
+        if (m_input) m_input->setString("");
+        Notification::create("Rhythm Bar: macro cargada (" +
+                                 asciiOnly(pathToUtf8(found->filename()), 30) + ")",
+                             NotificationIcon::Success)->show();
+        this->rebuildList();
+    }
+
+    // Saca la macro activa de la biblioteca (no borra el archivo).
+    void onRemove(CCObject*) {
+        const auto cfg = loadConfig();
+        const auto activePath = findMacro(cfg.macroFile, false);
+        const auto activeKey = activePath ? pathKey(pathToUtf8(*activePath)) : pathKey(cfg.macroFile);
+
+        auto list = loadLibrary();
+        const auto before = list.size();
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [&](std::string const& e) { return pathKey(e) == activeKey; }),
+                   list.end());
+        if (list.size() == before) {
+            Notification::create("Rhythm Bar: la macro activa no esta en la biblioteca",
+                                 NotificationIcon::Info)->show();
+            return;
+        }
         if (!saveLibrary(list)) {
             Notification::create("Rhythm Bar: no se pudo guardar la biblioteca", NotificationIcon::Error)->show();
             return;
         }
-        m_page = (list.size() - 1) / kPerPage;
-        Notification::create("Rhythm Bar: macro guardada", NotificationIcon::Success)->show();
+        Notification::create("Rhythm Bar: macro quitada de la biblioteca", NotificationIcon::Success)->show();
         this->rebuildList();
     }
 
@@ -1516,39 +1899,67 @@ class $modify(RhythmBaseGameLayer, GJBaseGameLayer) {
 };
 
 /*
- * Boton en el menu de pausa. Con geode.node-ids se engancha al menu lateral de la pausa;
- * si no lo encuentra, crea un menu propio en la esquina inferior derecha.
+ * Botones del mod en el menu de pausa: "Ritmo" (abre el popup) y "Modo Experimento" (toggle).
+ * Van en un menu propio, compactos, en una esquina libre (ver RPB_PAUSE_CORNER arriba), asi no
+ * se pisan con los botones centrales ni con los menus laterales de GD / Geode.
  */
 class $modify(RhythmPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
 
-        auto spr = ButtonSprite::create("Ritmo", 56, true, "bigFont.fnt", "GJ_button_01.png", 26.f, 0.6f);
-        auto btn = CCMenuItemSpriteExtra::create(spr, nullptr, this,
-                                                 menu_selector(RhythmPauseLayer::onRhythmMenu));
-        btn->setID("rhythm-menu-button"_spr);
+        const auto win = CCDirector::get()->getWinSize();
 
-        CCMenu* host = nullptr;
-        for (char const* id : {"right-button-menu", "left-button-menu"}) {
-            if (auto node = this->getChildByID(id)) host = typeinfo_cast<CCMenu*>(node);
-            if (host) break;
-        }
+        auto ritmoSpr = ButtonSprite::create("Ritmo", 54, true, "bigFont.fnt", "GJ_button_01.png", 24.f, 0.5f);
+        auto ritmoBtn = CCMenuItemSpriteExtra::create(ritmoSpr, nullptr, this,
+                                                      menu_selector(RhythmPauseLayer::onRhythmMenu));
+        ritmoBtn->setID("rhythm-menu-button"_spr);
 
-        if (host) {
-            host->addChild(btn);
-            host->updateLayout();
+        // gris = apagado, verde = encendido
+        auto offSpr = ButtonSprite::create("Modo Experimento", 150, true, "bigFont.fnt", "GJ_button_02.png", 24.f, 0.45f);
+        auto onSpr = ButtonSprite::create("Modo Experimento", 150, true, "bigFont.fnt", "GJ_button_01.png", 24.f, 0.45f);
+        auto toggle = CCMenuItemToggler::create(offSpr, onSpr, this,
+                                                menu_selector(RhythmPauseLayer::onExperiment));
+        toggle->setID("rhythm-experiment-toggle"_spr);
+        toggle->toggle(g_experiment);
+
+        const float margin = 8.f;
+        const float gap = 6.f;
+        const auto rs = ritmoSpr->getContentSize();
+        const auto ts = offSpr->getContentSize();
+        const float colW = std::max(rs.width, ts.width);
+        const bool right = (RPB_PAUSE_CORNER & 1) != 0;
+        const bool bottom = (RPB_PAUSE_CORNER & 2) != 0;
+
+        const float cx = right ? win.width - margin - colW / 2.f : margin + colW / 2.f;
+        const float step = (rs.height + ts.height) / 2.f + gap;
+        float yRitmo, yToggle;
+        if (!bottom) {
+            yRitmo = win.height - margin - rs.height / 2.f;
+            yToggle = yRitmo - step;
         } else {
-            const auto win = CCDirector::get()->getWinSize();
-            auto menu = CCMenu::create();
-            menu->setID("rhythm-menu"_spr);
-            menu->setPosition({0.f, 0.f});
-            btn->setPosition({win.width - 50.f, 28.f});
-            menu->addChild(btn);
-            this->addChild(menu, 10);
+            yToggle = margin + ts.height / 2.f;
+            yRitmo = yToggle + step;
         }
+        ritmoBtn->setPosition({cx, yRitmo});
+        toggle->setPosition({cx, yToggle});
+
+        auto menu = CCMenu::create();
+        menu->setID("rhythm-menu"_spr);
+        menu->setPosition({0.f, 0.f});
+        menu->addChild(ritmoBtn);
+        menu->addChild(toggle);
+        this->addChild(menu, 10);
     }
 
     void onRhythmMenu(CCObject*) {
         if (auto popup = RhythmPopup::create()) popup->show();
+    }
+
+    // El toggler cambia su propio aspecto; aqui solo se invierte el estado del mod y se aplica ya.
+    void onExperiment(CCObject*) {
+        g_experiment = !g_experiment;
+        RhythmBar::applyExperimentNow();
+        Notification::create(g_experiment ? "Modo Experimento: ACTIVADO" : "Modo Experimento: DESACTIVADO",
+                             g_experiment ? NotificationIcon::Success : NotificationIcon::Info)->show();
     }
 };
