@@ -1,12 +1,12 @@
 {
-	"geode": "3.0.0",
+	"geode": "5.11.2",
 	"gd": {
-		"win": "2.2074"
+		"win": "2.2081"
 	},
 	"version": "v1.0.0",
-	"id": "LuchX20.rhythm-practice-bar",
+	"id": "tuusuario.rhythm-practice-bar",
 	"name": "Rhythm Practice Bar",
-	"developer": "LuchX20",
+	"developer": "TuUsuario",
 	"description": "Barra de ritmo vertical (estilo guitar hero) para practicar el timing de clics a partir de una macro de texto.",
 	"tags": ["interface", "utility"],
 	"settings": {
