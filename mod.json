@@ -1,0 +1,89 @@
+{
+	"geode": "3.0.0",
+	"gd": {
+		"win": "2.2074"
+	},
+	"version": "v1.0.0",
+	"id": "LuchX20.rhythm-practice-bar",
+	"name": "Rhythm Practice Bar",
+	"developer": "LuchX20",
+	"description": "Barra de ritmo vertical (estilo guitar hero) para practicar el timing de clics a partir de una macro de texto.",
+	"tags": ["interface", "utility"],
+	"settings": {
+		"enabled": {
+			"type": "bool",
+			"name": "Activado",
+			"description": "Muestra la barra de ritmo dentro de los niveles.",
+			"default": true
+		},
+		"macro-file": {
+			"type": "string",
+			"name": "Archivo de macro",
+			"description": "Ruta del .txt con los tiempos. Si es relativa, se busca en la carpeta de guardado del mod (save dir).",
+			"default": "macro.txt"
+		},
+		"side": {
+			"type": "string",
+			"name": "Lado de la pantalla",
+			"default": "Derecha",
+			"one-of": ["Derecha", "Izquierda"]
+		},
+		"direction": {
+			"type": "string",
+			"name": "Dirección de las notas",
+			"description": "Bajan: aparecen arriba y caen hacia el receptor. Suben: aparecen abajo y suben hacia el receptor.",
+			"default": "Bajan",
+			"one-of": ["Bajan", "Suben"]
+		},
+		"bar-width": {
+			"type": "int",
+			"name": "Ancho de la barra (px)",
+			"default": 34,
+			"min": 16,
+			"max": 120,
+			"control": { "input": true, "slider": true }
+		},
+		"bar-height": {
+			"type": "int",
+			"name": "Alto de la barra (% de pantalla)",
+			"default": 70,
+			"min": 30,
+			"max": 95,
+			"control": { "input": true, "slider": true }
+		},
+		"lookahead": {
+			"type": "float",
+			"name": "Anticipación (segundos)",
+			"description": "Cuánto tiempo hacia el futuro se muestra. Menor valor = notas más rápidas.",
+			"default": 1.5,
+			"min": 0.5,
+			"max": 5.0,
+			"control": { "input": true, "slider": true }
+		},
+		"tap-threshold": {
+			"type": "int",
+			"name": "Umbral de clic único (ms)",
+			"description": "Si soltar ocurre antes de este tiempo tras presionar, se considera clic único (solo nota verde, sin barra de retención).",
+			"default": 120,
+			"min": 0,
+			"max": 500,
+			"control": { "input": true, "slider": true }
+		},
+		"offset": {
+			"type": "int",
+			"name": "Desfase de sincronización (ms)",
+			"default": 0,
+			"min": -500,
+			"max": 500,
+			"control": { "input": true, "slider": true }
+		},
+		"bg-opacity": {
+			"type": "int",
+			"name": "Opacidad del fondo (%)",
+			"default": 35,
+			"min": 0,
+			"max": 100,
+			"control": { "input": true, "slider": true }
+		}
+	}
+}
