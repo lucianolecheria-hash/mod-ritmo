@@ -4,9 +4,12 @@
  * a partir de una macro de Mega Hack.
  *
  * Formatos que lee parseMacro():
+ *   - GDR2 binario (.gdr2, formato de maxnut/GDReplayFormat): se lee directo de los bytes
  *   - JSON de Mega Hack (.mhr.json, "Advanced Options > Export JSON")
+ *   - JSON de otros bots que usan la extension .gdr2 (eventos con frame/down/button)
  *   - Texto plano: una linea por evento, "frame/tiempo + estado" (ver parseTextEvents)
  *
+ * El formato se detecta por el contenido, no por la extension del archivo.
  * Cabeceras, metadatos y lineas que no sean eventos de clic se ignoran.
  */
 #include <Geode/Geode.hpp>
@@ -15,6 +18,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -48,6 +53,8 @@ struct ParseInfo {
     std::string format;
     size_t events = 0;
     double fps = 0.0;
+    std::string error;   // no vacio = no se pudo leer la macro (mensaje corto para el jugador)
+    std::string detail;  // detalle tecnico para el log de Geode
 };
 
 enum class Unit { Frames, Seconds, Millis };
@@ -121,7 +128,9 @@ static void handleJsonLeaf(const std::string& obj, std::vector<RawEvent>& out, d
         if (jsonValue(obj, key, v) && lower(v) == "true") return;
     }
     // Solo el boton de salto (en plataformer 2 y 3 son izquierda/derecha).
-    if (jsonValue(obj, "btn", v) && std::atoi(v.c_str()) != 1) return;
+    if ((jsonValue(obj, "btn", v) || jsonValue(obj, "button", v)) && std::atoi(v.c_str()) != 1) {
+        return;
+    }
 
     RawEvent r{};
     if (hasFrame) {
@@ -307,6 +316,196 @@ static void parseTextEvents(const std::string& text, std::vector<RawEvent>& out,
     }
 }
 
+// ---------------------------------------------------------- GDR2 binario ----
+//
+// Estructura (README de maxnut/GDReplayFormat, rama gdr2):
+//   "GDR" | version(varint) | input tag(cstring)
+//   author(cstr) | description(cstr) | duracion(varint) | version del juego(varint)
+//   framerate(varint) | seed(varint) | monedas(varint) | ldm(u8) | platformer(u8)
+//   bot name(cstr) | bot version(varint) | level id(varint) | level name(cstr)
+//   tamano extension(varint) | extension(bytes)
+//   cantidad de muertes(varint) | frames de muerte(varint[], delta)
+//   cantidad de inputs(varint) | inputs del P1(varint) | inputs (primero todos los de P1, luego P2)
+// Cada input es un varint empaquetado: bit "down" + delta de frames respecto al input anterior
+// (en platformer ademas el id de boton). El README no deja claro que bit hace de continuacion
+// en ese varint, asi que se prueban las dos variantes y se acepta la que consume el archivo
+// exactamente. Si la cabecera no se puede recorrer, se busca la seccion de inputs al final.
+
+struct ByteReader {
+    const unsigned char* data;
+    size_t size;
+    size_t pos = 0;
+    bool ok = true;
+
+    explicit ByteReader(const std::string& s)
+        : data(reinterpret_cast<const unsigned char*>(s.data())), size(s.size()) {}
+
+    unsigned char u8() {
+        if (pos >= size) {
+            ok = false;
+            return 0;
+        }
+        return data[pos++];
+    }
+
+    // LEB128 estandar: bit 7 = continuacion.
+    uint64_t varint() {
+        uint64_t v = 0;
+        for (int k = 0; k < 10; ++k) {
+            const unsigned char b = u8();
+            if (!ok) return 0;
+            v |= static_cast<uint64_t>(b & 0x7F) << (7 * k);
+            if (!(b & 0x80)) return v;
+        }
+        ok = false;
+        return 0;
+    }
+
+    // Variante literal del README: bit 0 = continuacion, bits 1-7 = datos.
+    uint64_t varintLsb() {
+        uint64_t v = 0;
+        for (int k = 0; k < 10; ++k) {
+            const unsigned char b = u8();
+            if (!ok) return 0;
+            v |= static_cast<uint64_t>(b >> 1) << (7 * k);
+            if (!(b & 1)) return v;
+        }
+        ok = false;
+        return 0;
+    }
+
+    void cstr() {
+        for (size_t n = 0; n < 65536; ++n) {
+            if (u8() == 0 || !ok) return;
+        }
+        ok = false;
+    }
+
+    void skip(uint64_t n) {
+        if (n > size - pos) {
+            ok = false;
+            pos = size;
+        } else {
+            pos += static_cast<size_t>(n);
+        }
+    }
+};
+
+enum class PackScheme { Leb128, LsbContinuation };
+
+// Lee `count` inputs desde la posicion actual. Devuelve true si no se salio del archivo.
+static bool readGdr2Inputs(ByteReader& r, uint64_t count, uint64_t p1Count, bool platformer,
+                           PackScheme scheme, bool extensionPerInput, std::vector<RawEvent>& out) {
+    out.clear();
+    uint64_t frame = 0;
+    for (uint64_t i = 0; i < count; ++i) {
+        const uint64_t v = scheme == PackScheme::Leb128 ? r.varint() : r.varintLsb();
+        if (!r.ok) return false;
+        if (extensionPerInput) {
+            r.skip(r.varint());
+            if (!r.ok) return false;
+        }
+        if (i == p1Count) frame = 0;  // empieza el bloque del jugador 2
+        const bool down = (v & 1) != 0;
+        uint64_t button = 1;
+        uint64_t delta = v >> 1;
+        if (platformer) {
+            button = (v >> 1) & 3;  // 1 = saltar, 2 = izquierda, 3 = derecha
+            delta = v >> 3;
+        }
+        frame += delta;
+        if (i < p1Count && button == 1) out.push_back({static_cast<double>(frame), Unit::Frames, down});
+    }
+    return r.ok;
+}
+
+struct Gdr2Result {
+    std::vector<RawEvent> events;
+    double fps = 0.0;
+    bool heuristic = false;
+};
+
+static bool parseGdr2Structured(const std::string& text, Gdr2Result& res) {
+    ByteReader r(text);
+    r.skip(3);   // "GDR"
+    r.varint();  // version
+    r.cstr();    // input tag
+    r.cstr();    // autor
+    r.cstr();    // descripcion
+    r.varint();  // duracion
+    r.varint();  // version del juego
+    const uint64_t fps = r.varint();
+    r.varint();  // seed
+    r.varint();  // monedas
+    r.u8();      // ldm
+    const bool platformer = r.u8() != 0;
+    r.cstr();    // bot name
+    r.varint();  // bot version
+    r.varint();  // level id
+    r.cstr();    // level name
+    r.skip(r.varint());  // extension
+    const uint64_t deaths = r.varint();
+    if (!r.ok || deaths > text.size()) return false;
+    for (uint64_t d = 0; d < deaths && r.ok; ++d) r.varint();
+    const uint64_t count = r.varint();
+    const uint64_t p1 = r.varint();
+    if (!r.ok || p1 > count || count > text.size()) return false;
+
+    const size_t inputsPos = r.pos;
+    const PackScheme schemes[] = {PackScheme::Leb128, PackScheme::LsbContinuation};
+    for (bool ext : {false, true}) {
+        for (PackScheme sch : schemes) {
+            ByteReader rr(text);
+            rr.pos = inputsPos;
+            std::vector<RawEvent> ev;
+            if (readGdr2Inputs(rr, count, p1, platformer, sch, ext, ev) && rr.pos == rr.size) {
+                res.events = std::move(ev);
+                if (fps >= 1 && fps <= 10000) res.fps = static_cast<double>(fps);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Plan B: si la cabecera no coincide con el README, busca desde el principio el primer
+// punto donde "cantidad, cantidad P1, inputs..." consume el archivo hasta el final.
+static bool parseGdr2Scan(const std::string& text, Gdr2Result& res) {
+    const PackScheme schemes[] = {PackScheme::Leb128, PackScheme::LsbContinuation};
+    for (size_t o = 3; o < text.size(); ++o) {
+        for (PackScheme sch : schemes) {
+            ByteReader r(text);
+            r.pos = o;
+            const uint64_t count = r.varint();
+            const uint64_t p1 = r.varint();
+            if (!r.ok || count == 0 || p1 > count || count > text.size() - r.pos) continue;
+            std::vector<RawEvent> ev;
+            if (readGdr2Inputs(r, count, p1, false, sch, false, ev) && r.pos == r.size && !ev.empty()) {
+                res.events = std::move(ev);
+                res.heuristic = true;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static std::string hexHead(const std::string& s, size_t n = 24) {
+    std::string out;
+    char buf[4];
+    for (size_t i = 0; i < s.size() && i < n; ++i) {
+        std::snprintf(buf, sizeof(buf), "%02X ", static_cast<unsigned char>(s[i]));
+        out += buf;
+    }
+    return out;
+}
+
+static bool looksLikeGdr2(const std::string& text) {
+    if (text.size() < 8 || text.compare(0, 3, "GDR") != 0) return false;
+    // la cabecera tiene un string terminado en 0 enseguida (el input tag)
+    return text.find('\0', 3) < std::min<size_t>(text.size(), 256);
+}
+
 // --------------------------------------------------- eventos -> notas ----
 
 static Macro buildMacro(std::vector<ClickEvent> events, double tapThreshold) {
@@ -344,9 +543,37 @@ static Macro parseMacro(const std::string& text, const ParserSettings& st, Parse
     size_t i = 0;
     while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) ++i;
     const bool isJson = i < text.size() && (text[i] == '{' || text[i] == '[');
+    const auto byte0 = text.empty() ? 0 : static_cast<unsigned char>(text[0]);
+    const auto byte1 = text.size() < 2 ? 0 : static_cast<unsigned char>(text[1]);
 
-    if (isJson) {
-        info.format = "JSON (.mhr.json)";
+    if (looksLikeGdr2(text)) {
+        Gdr2Result g;
+        if (parseGdr2Structured(text, g)) {
+            info.format = "GDR2 (binario)";
+        } else if (parseGdr2Scan(text, g)) {
+            info.format = "GDR2 (binario, lectura heuristica)";
+        } else {
+            info.format = "GDR2 (binario)";
+            info.error = "no se pudo interpretar el .gdr2";
+            info.detail = "primeros bytes: " + hexHead(text);
+            return Macro{};
+        }
+        raw = std::move(g.events);
+        headerFps = g.fps;
+    } else if (byte0 == 0x1F && byte1 == 0x8B) {
+        info.error = "el archivo esta comprimido (gzip); descomprimilo primero";
+        info.detail = "primeros bytes: " + hexHead(text);
+        return Macro{};
+    } else if (byte0 == 0x28 && byte1 == 0xB5) {
+        info.error = "el archivo esta comprimido (zstd); descomprimilo primero";
+        info.detail = "primeros bytes: " + hexHead(text);
+        return Macro{};
+    } else if (!isJson && text.find('\0') != std::string::npos) {
+        info.error = "formato binario no reconocido";
+        info.detail = "primeros bytes: " + hexHead(text);
+        return Macro{};
+    } else if (isJson) {
+        info.format = "JSON (.mhr.json / .gdr2 json)";
         parseJsonEvents(text, raw, headerFps);
     } else {
         info.format = "texto plano";
@@ -594,15 +821,14 @@ class $modify(RhythmPlayLayer, PlayLayer) {
                                  NotificationIcon::Error)->show();
             return true;
         }
-        if (text.find('\0') != std::string::npos) {
-            log::warn("Rhythm Bar: {} es binario (.mhr/.gdr), exportalo como JSON o texto", path.string());
-            Notification::create("Rhythm Bar: la macro es binaria. Exportala como JSON o texto",
-                                 NotificationIcon::Error)->show();
-            return true;
-        }
 
         rpb::ParseInfo info;
         auto macro = rpb::parseMacro(text, cfg.parser, info);
+        if (!info.error.empty()) {
+            log::warn("Rhythm Bar: {} -> {} ({})", path.string(), info.error, info.detail);
+            Notification::create("Rhythm Bar: " + info.error, NotificationIcon::Error)->show();
+            return true;
+        }
         log::info("Rhythm Bar: {} -> formato {}, {} eventos, {} clics, {} holds, {} fps",
                   path.string(), info.format, info.events, macro.presses.size(),
                   macro.holds.size(), info.fps);
