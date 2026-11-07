@@ -1284,9 +1284,12 @@ private:
         }
     }
 
-    bool keepsVisible(PlayLayer* pl, CCNode* n) const {
-        return n == static_cast<CCNode*>(pl->m_uiLayer) || n == this->getParent() ||
-               n == static_cast<CCNode const*>(m_blackout) ||
+    // OJO: no puede ser const, getParent() de Cocos2d no es const.
+    bool keepsVisible(PlayLayer* pl, CCNode* n) {
+        CCNode* ui = static_cast<CCNode*>(pl->m_uiLayer);
+        CCNode* parent = this->getParent();
+        CCNode* black = static_cast<CCNode*>(m_blackout);
+        return n == ui || n == parent || n == black ||
                typeinfo_cast<FLAlertLayer*>(n) != nullptr ||
                typeinfo_cast<GJDropDownLayer*>(n) != nullptr;  // pantalla de nivel completado, etc.
     }
