@@ -1,49 +1,57 @@
 /*
- * Rhythm Practice Bar  (luchx.barra-ritmo-final)
- * Barra horizontal inferior estilo juego de ritmo para practicar el timing de clics
- * a partir de una macro de Mega Hack / .gdr2.
+ * Rhythm Practice Bar  v1.50  (luchx.barra-ritmo-final)
+ * Barra estilo juego de ritmo para practicar el timing de clics a partir de una macro
+ * de Mega Hack / .gdr2. Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor):
+ * CERO texturas del juego. Sin reaparicion automatica ni StartPos virtual (eso lo maneja el
+ * jugador a mano): el mod solo dibuja, juzga y muestra resultados.
  *
- * - Las notas viajan de izquierda a derecha hacia una linea receptora.
- * - Al presionar el salto (P1) el receptor destella en verde; al soltar, en celeste.
- * - Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor): CERO texturas del juego.
+ * NOVEDADES v1.50
+ *  1) Sin barras celestes. Cada nota de la macro se dibuja como un hold limpio: contenedor verde
+ *     (bajada) -> barra -> contenedor verde (subida). Al acertar la bajada la barra queda anclada
+ *     al receptor y se va "consumiendo" mientras se mantiene el boton. Si la macro trae un 2do
+ *     jugador, sus clics y holds se dibujan en MORADO CLARO (solo visual: el juicio es de P1).
+ *  2) Precision: el juicio trabaja con CUADROS ENTEROS (llround(levelTime * fps)) tanto del
+ *     jugador como de la macro. El Desfase (ms) ahora es SOLO visual (mueve el dibujo de las
+ *     notas) y ya no entra al juicio: antes el valor por defecto (-5 ms = +1.2 cuadros a 240 fps)
+ *     convertia un clic exacto en "Perfecto+!". Por defecto el Desfase pasa a 0 ms.
+ *     kInputFrameBias (0) queda como ajuste fino por si una version del juego aplica el clic un
+ *     paso antes / despues de avanzar m_levelTime.
+ *  3) Direccion de las notas: Izquierda->Derecha, Derecha->Izquierda, Arriba->Abajo y Abajo->Arriba
+ *     (barra vertical). "Altura Barra" mueve toda la estructura por el eje Y.
+ *  4) Casilla "Mini-Barra Superior": setVisible(false) sobre toda la mini-barra de micro-frames.
  *
  * JUICIO POR FRAMES EXACTOS (usa los fps de la macro; 240 si el archivo no los trae):
- *   - Pulsar: se compara el frame del clic del jugador con el frame de la macro. ESTE es el juicio
- *     principal y el unico que existe en los clics comunes / cortos.
- *   - Soltar: SOLO en holds largos que la macro registra de forma explicita (duracion >=
- *     tap-threshold, 120 ms por defecto): se compara la DURACION del hold del jugador (en frames)
- *     con la del hold de la macro. En un clic comun el soltar NO se evalua nunca.
+ *   - Pulsar: frame del clic del jugador contra frame de la macro (juicio principal).
+ *   - Soltar: SOLO en holds largos explicitos (duracion >= tap-threshold, 120 ms por defecto):
+ *     se compara la DURACION del hold del jugador (en frames) con la de la macro.
  *
- *       0 frames de diferencia  -> "Excelente!"   (celeste / cian brillante)
+ *       0 frames de diferencia  -> "Excelente!"   (cian brillante)
  *       +-1 frame               -> "Perfecto+!"   (verde lima)
  *       +-2 a 3 frames          -> "Perfecto!"    (verde)
  *       mas de 3 frames         -> "Temprano" / "Tarde"
  *       sin pulsar / sin soltar -> "Fallo!"       (un solo Fallo por clic)
  *
- * - Mini-barra de micro-frames sobre el receptor: marca en que frame exacto entro el clic
- *   (blanco, mitad superior) y el error del hold al soltar (dorado, mitad inferior).
- * - Combo ACUMULATIVO de aciertos limpios: "Excelente!", "Perfecto+!" y "Perfecto!" suman y no
- *   se cortan entre si. Solo "Temprano", "Tarde" o "Fallo!" lo reinician a 0. El combo maximo de
- *   la run guarda el pico mas alto de esa racha.
- * - Pantalla de resultados estilo osu! al completar el nivel (PlayLayer::levelComplete), con una
- *   grafica de precision por tramo del nivel (CCDrawNode): eje X = 0..100% del nivel, eje Y =
- *   precision de los clics en ese tramo (cian/verde = limpio, rojo = fallos / imprecisiones).
- * - Popup "Ritmo" (boton del menu de pausa) con ajustes en tiempo real:
- *     Largo, Grosor, Altura Barra, Fondo, Velocidad, Desfase (ms), Modo Experimento,
- *     Ocultar Barra y biblioteca de macros.
+ * - Combo ACUMULATIVO (RunStats::combo / RunStats::maxCombo): "Excelente!", "Perfecto+!" y
+ *   "Perfecto!" suman; solo "Temprano", "Tarde" o "Fallo!" lo reinician a 0.
+ * - Pantalla de resultados estilo osu! (RhythmResultsPopup) con el mapa de calor / grafica de
+ *   precision por tramo dibujada con CCDrawNode (sin cambios respecto a v1.4x).
+ * - Popup "Ritmo" (boton del menu de pausa) con ajustes en tiempo real: Largo, Grosor,
+ *   Altura Barra, Fondo, Velocidad, Desfase (ms), Direccion, Modo Experimento, Ocultar Barra,
+ *   Mini-Barra Superior y biblioteca de macros.
  *
- * Desfase por defecto: -5 ms (kOffsetDef). Si "offset" esta declarado en mod.json con otro valor
- * por defecto, ensureDefaultOffset() lo pasa a -5 una sola vez (solo si el jugador nunca lo toco).
+ * Nota sobre el logo de FNF: este archivo no contiene ningun logo de FNF (la barra usa solo
+ * rectangulos solidos), asi que no hay nada que conservar ni que agregar.
  *
  * Equivalencias de nombres (por si se buscan por el nombre del pedido):
  *   evaluarPrecisionFrame      -> classifyFrames() + RhythmBar::judgePress() / judgeRelease()
- *   m_audioOffsetMs            -> ajuste "offset" (kOffsetDef / Config::offset)
+ *   m_audioOffsetMs            -> ajuste "offset" (kOffsetDef / Config::offset, solo visual)
  *   m_currentCombo, m_maxCombo -> RunStats::combo, RunStats::maxCombo
  *   desplegarPantallaResultadosOsu -> RhythmResultsPopup (lo abre RhythmBar::openResults)
  *
  * Persistencia: cada ajuste se guarda con Mod::get()->setSettingValue cuando esta declarado en
  * mod.json (bar-width, bar-height, bg-opacity, offset, ...). Los que no esten declarados
- * (scroll-speed, bar-y, hide-bar) se guardan como valor guardado del mod, que tambien persiste.
+ * (scroll-speed, bar-y, hide-bar, bar-dir, show-minibar) se guardan como valor guardado del mod,
+ * que tambien persiste.
  *
  * Formatos que lee parseMacro():
  *   - GDR2 binario (.gdr2, formato de maxnut/GDReplayFormat): se lee directo de los bytes
@@ -88,15 +96,16 @@ struct Hold {
 };
 
 struct Macro {
-    std::vector<double> presses;   // notas verdes: inicio de cada clic (segundos)
-    std::vector<double> releases;  // notas celestes: soltar de un hold LARGO (segundos)
-    std::vector<Hold> holds;       // barras translucidas (solo holds largos)
-    std::vector<Hold> clicks;      // TODOS los clics (inicio, fin, si es hold largo): juicio por frames
+    std::vector<double> presses;  // inicio de cada clic de P1 (segundos)
+    std::vector<Hold> holds;      // holds largos de P1
+    std::vector<Hold> clicks;     // TODOS los clics de P1 (inicio, fin, si es hold largo): juicio por frames
+    std::vector<Hold> clicks2;    // TODOS los clics de P2: solo se dibujan (morado claro), no se juzgan
 };
 
 struct ParseInfo {
     std::string format;
-    size_t events = 0;
+    size_t events = 0;    // eventos de P1
+    size_t eventsP2 = 0;  // eventos de P2
     double fps = 0.0;
     std::string error;   // no vacio = no se pudo leer la macro (mensaje corto para el jugador)
     std::string detail;  // detalle tecnico para el log de Geode
@@ -108,6 +117,7 @@ struct RawEvent {
     double value;
     Unit unit;
     bool down;
+    bool p2;
 };
 
 struct ClickEvent {
@@ -168,9 +178,10 @@ static void handleJsonLeaf(const std::string& obj, std::vector<RawEvent>& out, d
     }
     if (!hasDown) return;
 
-    // Solo jugador 1.
+    // Jugador 2: se conserva (marcado) para dibujarlo en morado claro.
+    bool player2 = false;
     for (const char* key : {"p2", "player2", "2p"}) {
-        if (jsonValue(obj, key, v) && lower(v) == "true") return;
+        if (jsonValue(obj, key, v) && lower(v) == "true") player2 = true;
     }
     // Solo el boton de salto (en plataformer 2 y 3 son izquierda/derecha).
     if ((jsonValue(obj, "btn", v) || jsonValue(obj, "button", v)) && std::atoi(v.c_str()) != 1) {
@@ -187,6 +198,7 @@ static void handleJsonLeaf(const std::string& obj, std::vector<RawEvent>& out, d
     }
     const std::string d = lower(downStr);
     r.down = (d == "true" || d == "1");
+    r.p2 = player2;
     out.push_back(r);
 }
 
@@ -298,6 +310,7 @@ static bool isStateKey(const std::string& w) {
  * Ejemplos validos:
  *   120 1            120,down          frame 120 down        frame: 120 down: true
  *   0.5 press        1.25s release     120 1 0   (columnas P1 P2: se usa P1)
+ *   150 down p2      (cualquier linea con "p2" / "2p" / "player2" es del jugador 2)
  * "fps: 240" (o tps) en la cabecera fija los fps. Todo lo demas se ignora.
  */
 static void parseTextEvents(const std::string& text, std::vector<RawEvent>& out, double& fps) {
@@ -331,14 +344,15 @@ static void parseTextEvents(const std::string& text, std::vector<RawEvent>& out,
         Unit unit = Unit::Frames;
         if (!parseTime(tk[ti], value, unit)) continue;
 
-        int state = -1;
         bool player2 = false;
         for (size_t j = ti + 1; j < tk.size(); ++j) {
             const std::string w = lower(tk[j]);
-            if (w == "p2" || w == "2p" || w == "player2") {
-                player2 = true;
-                break;
-            }
+            if (w == "p2" || w == "2p" || w == "player2") player2 = true;
+        }
+
+        int state = -1;
+        for (size_t j = ti + 1; j < tk.size(); ++j) {
+            const std::string w = lower(tk[j]);
             if (w == "btn" || w == "button") {
                 ++j;  // salta el numero de boton
                 continue;
@@ -356,8 +370,8 @@ static void parseTextEvents(const std::string& text, std::vector<RawEvent>& out,
                 break;
             }
         }
-        if (player2 || state < 0) continue;
-        out.push_back({value, unit, state == 1});
+        if (state < 0) continue;
+        out.push_back({value, unit, state == 1, player2});
     }
 }
 
@@ -439,6 +453,7 @@ struct ByteReader {
 enum class PackScheme { Leb128, LsbContinuation };
 
 // Lee `count` inputs desde la posicion actual. Devuelve true si no se salio del archivo.
+// Los inputs del bloque del jugador 2 (indice >= p1Count) se marcan con p2 = true.
 static bool readGdr2Inputs(ByteReader& r, uint64_t count, uint64_t p1Count, bool platformer,
                            PackScheme scheme, bool extensionPerInput, std::vector<RawEvent>& out) {
     out.clear();
@@ -459,7 +474,9 @@ static bool readGdr2Inputs(ByteReader& r, uint64_t count, uint64_t p1Count, bool
             delta = v >> 3;
         }
         frame += delta;
-        if (i < p1Count && button == 1) out.push_back({static_cast<double>(frame), Unit::Frames, down});
+        if (button == 1) {
+            out.push_back({static_cast<double>(frame), Unit::Frames, down, i >= p1Count});
+        }
     }
     return r.ok;
 }
@@ -553,22 +570,14 @@ static bool looksLikeGdr2(const std::string& text) {
 
 // --------------------------------------------------- eventos -> notas ----
 
-static Macro buildMacro(std::vector<ClickEvent> events, double tapThreshold) {
+// Empareja bajada / subida de un solo jugador en clics (inicio, fin, si es hold largo).
+static void pairClicks(std::vector<ClickEvent> events, double tapThreshold, std::vector<Hold>& out) {
     std::stable_sort(events.begin(), events.end(),
                      [](const ClickEvent& a, const ClickEvent& b) { return a.time < b.time; });
 
-    Macro m;
-    auto finish = [&](double t0, double t1) {
-        // Hold largo explicito: solo estos se juzgan tambien al soltar. Un clic comun (corto)
-        // se juzga UNICAMENTE por el frame exacto de impacto (el Press).
-        const bool longHold = (t1 - t0) >= tapThreshold;
-        m.presses.push_back(t0);
-        m.clicks.push_back({t0, t1, longHold});  // todos los clics, para el juicio por frames
-        if (longHold) {                          // hold largo: barra + nota celeste al soltar
-            m.holds.push_back({t0, t1, true});
-            m.releases.push_back(t1);
-        }
-    };
+    // Hold largo explicito: solo estos se juzgan tambien al soltar. Un clic comun (corto)
+    // se juzga UNICAMENTE por el frame exacto de impacto (el Press).
+    auto finish = [&](double t0, double t1) { out.push_back({t0, t1, (t1 - t0) >= tapThreshold}); };
 
     bool held = false;
     double t0 = 0.0;
@@ -582,6 +591,16 @@ static Macro buildMacro(std::vector<ClickEvent> events, double tapThreshold) {
         }
     }
     if (held) finish(t0, t0);  // la macro termina con el boton apretado: clic simple
+}
+
+static Macro buildMacro(std::vector<ClickEvent> p1, std::vector<ClickEvent> p2, double tapThreshold) {
+    Macro m;
+    pairClicks(std::move(p1), tapThreshold, m.clicks);
+    pairClicks(std::move(p2), tapThreshold, m.clicks2);
+    for (const auto& c : m.clicks) {
+        m.presses.push_back(c.start);
+        if (c.hold) m.holds.push_back(c);
+    }
     return m;
 }
 
@@ -631,18 +650,19 @@ static Macro parseMacro(const std::string& text, const ParserSettings& st, Parse
 
     double fps = st.fps > 0.0 ? st.fps : (headerFps > 0.0 ? headerFps : 240.0);
 
-    std::vector<ClickEvent> events;
-    events.reserve(raw.size());
+    std::vector<ClickEvent> ev1, ev2;
+    ev1.reserve(raw.size());
     for (const auto& r : raw) {
         double t = r.value;
         if (r.unit == Unit::Frames) t = r.value / fps;
         else if (r.unit == Unit::Millis) t = r.value / 1000.0;
-        events.push_back({t, r.down});
+        (r.p2 ? ev2 : ev1).push_back({t, r.down});
     }
 
-    info.events = events.size();
+    info.events = ev1.size();
+    info.eventsP2 = ev2.size();
     info.fps = fps;
-    return buildMacro(std::move(events), st.tapThreshold);
+    return buildMacro(std::move(ev1), std::move(ev2), st.tapThreshold);
 }
 
 }  // namespace rpb
@@ -654,8 +674,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Ventana exterior en segundos: fuera de esto el clic no cuenta y la nota se da por perdida.
-// Dentro de la ventana el juicio se hace SIEMPRE en frames exactos (ver classifyFrames).
+// Ventana exterior: fuera de esto el clic no cuenta y la nota se da por perdida.
+// Dentro de la ventana el juicio se hace SIEMPRE en frames enteros (ver classifyFrames).
 constexpr double kOuterWin = 0.250;
 constexpr double kZoneWin = 0.050;  // solo visual: zona sombreada alrededor del receptor
 
@@ -663,15 +683,19 @@ constexpr double kZoneWin = 0.050;  // solo visual: zona sombreada alrededor del
 constexpr int kPerfectPlusFrames = 1;  // +-1 -> Perfecto+!
 constexpr int kPerfectFrames = 3;      // +-2..3 -> Perfecto!
 
+// Ajuste fino (en cuadros) del cuadro del jugador. 0 = el cuadro que muestra m_levelTime en
+// handleButton coincide con el de la macro. Si en tu version del juego un clic exacto siempre
+// sale +1 / -1, pon -1 / +1 aqui (es el unico punto donde se toca el paso de tiempo).
+constexpr int kInputFrameBias = 0;
+
 constexpr int kMicroRange = 8;       // la mini-barra muestra +-8 frames
 constexpr float kMicroH = 10.f;      // alto de la mini-barra
 constexpr float kTopExtra = 84.f;    // espacio sobre la barra para mini-barra, combo y cartel
+constexpr float kTopExtraLite = 48.f;  // idem con la mini-barra oculta (solo cartel y combo)
 
 constexpr float kReceptorFrac = 0.85f;  // posicion del receptor dentro de la barra (0..1)
-constexpr float kNoteWidth = 6.f;
-constexpr float kReleaseWidth = 4.f;
-constexpr double kLinger = 0.06;
-constexpr size_t kMaxSlots = 384;
+constexpr float kNoteWidth = 6.f;       // grosor de un contenedor (nota) a lo largo del recorrido
+constexpr size_t kMaxSlots = 512;
 constexpr size_t kMaxTrail = 64;
 constexpr int kResultsTag = 7731;
 constexpr float kResultsDelay = 2.6f;  // segundos hasta mostrar los resultados (sobre la pantalla de fin)
@@ -681,18 +705,23 @@ constexpr int64_t kSpeedMin = 20;
 constexpr int64_t kSpeedMax = 400;
 constexpr int64_t kSpeedDef = 100;
 
-// Desfase por defecto en ms: calibra de forma nativa el retraso de entrada desde el primer segundo.
-constexpr int64_t kOffsetDef = -5;
+// Desfase VISUAL por defecto, en ms. Solo mueve el dibujo de las notas: NO entra al juicio.
+constexpr int64_t kOffsetDef = 0;
+
+// Direccion en la que corren las notas.
+enum class BarDir : int { LeftToRight = 0, RightToLeft = 1, TopToBottom = 2, BottomToTop = 3 };
+
+char const* const kDirNames[4] = {"Izq > Der", "Der > Izq", "Arr > Aba", "Aba > Arr"};
 
 const ccColor3B kColWhite{255, 255, 255};
 const ccColor3B kColGreen{60, 255, 100};
-const ccColor3B kColCyan{80, 220, 255};
 const ccColor3B kColRed{255, 70, 70};
 const ccColor3B kColLime{180, 255, 40};
 const ccColor3B kColBrightCyan{40, 240, 255};
 const ccColor3B kColGold{255, 220, 90};
 const ccColor3B kColOrange{255, 170, 50};
 const ccColor3B kColPurple{190, 130, 255};
+const ccColor3B kColLightPurple{205, 165, 255};  // notas y holds del 2do jugador
 const ccColor3B kColGray{190, 190, 200};
 
 // Modo Experimento: solo vive en esta sesion del juego (se apaga al reiniciar GD).
@@ -704,12 +733,14 @@ std::string g_barStatus = "sin iniciar";
 struct Config {
     bool enabled = true;
     bool hidden = false;        // "hide-bar": Ocultar Barra
+    bool showMiniBar = true;    // "show-minibar": mini-barra de micro-frames
+    int dir = 0;                // "bar-dir": ver BarDir
     std::string macroFile = "macro.txt";
-    float barWidthPct = 60.f;   // "bar-width": largo de la barra, % del ancho de pantalla
+    float barWidthPct = 60.f;   // "bar-width": largo de la barra, % del ancho (o del alto si es vertical)
     float barThickness = 44.f;  // "bar-height": grosor de la barra en px
     float barY = 0.f;           // "bar-y": altura de la barra sobre el borde inferior, px
     double lookahead = 1.5;     // segundos que tarda una nota en llegar al receptor (ya con la velocidad aplicada)
-    double offset = static_cast<double>(kOffsetDef) / 1000.0;  // "offset": desfase en segundos (se edita en ms)
+    double offset = static_cast<double>(kOffsetDef) / 1000.0;  // "offset": desfase VISUAL en segundos
     float bgOpacity = 0.35f;    // "bg-opacity": 0..1
     rpb::ParserSettings parser;
 };
@@ -752,14 +783,13 @@ void setBoolSetting(char const* key, bool v) {
     }
 }
 
-// Aplica UNA sola vez el desfase por defecto (-5 ms). Cubre el caso en que "offset" este declarado
-// en mod.json con otro valor por defecto (0): si el jugador nunca lo toco (sigue en 0), pasa a -5.
-// Si no esta declarado, intSetting() ya devuelve kOffsetDef y no se toca nada.
+// Migracion unica a v1.50: el desfase por defecto de versiones anteriores era -5 ms. Como ahora
+// es solo visual, si el jugador nunca lo cambio (sigue en -5) se pasa al nuevo valor por defecto.
 void ensureDefaultOffset() {
     auto mod = Mod::get();
-    if (mod->getSavedValue<bool>("offset-default-applied", false)) return;
-    (void)mod->setSavedValue<bool>("offset-default-applied", true);
-    if (intSetting("offset", kOffsetDef) == 0) setIntSetting("offset", kOffsetDef);
+    if (mod->getSavedValue<bool>("offset-v150-migrated", false)) return;
+    (void)mod->setSavedValue<bool>("offset-v150-migrated", true);
+    if (intSetting("offset", kOffsetDef) == -5) setIntSetting("offset", kOffsetDef);
 }
 
 bool hideBarSetting() {
@@ -768,6 +798,18 @@ bool hideBarSetting() {
 
 void setHideBarSetting(bool v) {
     setBoolSetting("hide-bar", v);
+}
+
+bool miniBarSetting() {
+    return boolSetting("show-minibar", true);
+}
+
+void setMiniBarSetting(bool v) {
+    setBoolSetting("show-minibar", v);
+}
+
+int dirSetting() {
+    return static_cast<int>(std::clamp<int64_t>(intSetting("bar-dir", 0), 0, 3));
 }
 
 std::string macroFileSetting() {
@@ -791,6 +833,8 @@ Config loadConfig() {
     Config c;
     c.enabled = boolSetting("enabled", true);
     c.hidden = hideBarSetting();
+    c.showMiniBar = miniBarSetting();
+    c.dir = dirSetting();
     c.macroFile = macroFileSetting();
     c.barWidthPct = static_cast<float>(std::clamp<int64_t>(intSetting("bar-width", 60), 10, 100));
     c.barThickness = static_cast<float>(std::clamp<int64_t>(intSetting("bar-height", 44), 16, 200));
@@ -804,8 +848,7 @@ Config loadConfig() {
     if (base <= 0.0) base = 1.5;
     const double baseLookahead = std::max(0.1, base);
     c.lookahead = std::max(0.05, baseLookahead / speed);
-    // Desfase en ms (se edita desde el popup): compensa el delay de audio / pantalla del equipo.
-    // Por defecto -5 ms (kOffsetDef).
+    // Desfase en ms (se edita desde el popup). SOLO VISUAL: no entra al juicio por frames.
     c.offset = static_cast<double>(std::clamp<int64_t>(intSetting("offset", kOffsetDef), -1000, 1000)) / 1000.0;
     c.parser.tapThreshold =
         static_cast<double>(std::clamp<int64_t>(intSetting("tap-threshold", 120), 10, 1000)) / 1000.0;
@@ -829,7 +872,7 @@ constexpr SettingRow kRows[] = {
     {"Largo", "bar-width", 10, 100, 5, 60, "%"},
     {"Grosor", "bar-height", 16, 120, 4, 44, "px"},
     {"Altura Barra", "bar-y", 0, 260, 5, 0, "px"},
-    {"Fondo", "bg-opacity", 0, 100, 5, 60, "%"},
+    {"Fondo", "bg-opacity", 0, 100, 5, 35, "%"},
     {"Velocidad", "scroll-speed", kSpeedMin, kSpeedMax, 10, kSpeedDef, "%"},
     {"Desfase", "offset", -200, 200, 5, kOffsetDef, "ms"},
 };
@@ -1063,8 +1106,9 @@ LoadResult loadMacro(Config const& cfg) {
         r.error = info.error;
         return r;
     }
-    log::info("Rhythm Bar: {} -> formato {}, {} eventos, {} clics, {} holds largos, {} fps", shown,
-              info.format, info.events, macro.presses.size(), macro.holds.size(), info.fps);
+    log::info("Rhythm Bar: {} -> formato {}, {} eventos P1, {} eventos P2, {} clics, {} holds largos, {} fps",
+              shown, info.format, info.events, info.eventsP2, macro.presses.size(), macro.holds.size(),
+              info.fps);
 
     if (macro.presses.empty()) {
         r.error = "no se encontraron clics en la macro";
@@ -1548,20 +1592,27 @@ public:
 };
 
 // ------------------------------------------------------------ barra ----
+//
+// Geometria: la barra se calcula SIEMPRE en un eje "de recorrido" s (0 = borde por donde entran
+// las notas, m_len = borde de salida) y un eje transversal c (0..m_thick). box() convierte ese
+// par de rangos a un rectangulo (x, y, w, h) segun la direccion elegida, asi el dibujo es el
+// mismo para las cuatro direcciones.
 
 class RhythmBar : public CCNode {
 protected:
     static constexpr size_t kNone = static_cast<size_t>(-1);
 
-    // Un clic de la macro: pulsar (start) y, SOLO si es un hold largo explicito, soltar (end).
-    //   pulsar -> frame del clic contra frame de la macro (siempre)
-    //   soltar -> duracion del hold del jugador (frames) contra duracion del hold de la macro
+    // Un clic de la macro (P1): pulsar y, SOLO si es un hold largo explicito, soltar.
+    //   pulsar -> cuadro del clic contra cuadro de la macro (siempre)
+    //   soltar -> duracion del hold del jugador (cuadros) contra la de la macro
     //             (solo holds largos; en un clic comun el soltar no se juzga)
     struct Click {
-        double start = 0.0;
+        double start = 0.0;  // segundos (solo para dibujar)
         double end = 0.0;
-        double playerPress = 0.0;  // momento en que el jugador pulso (si acerto)
-        bool hasRel = false;       // true = hold largo explicito: el soltar tambien se juzga
+        int sF = 0;          // cuadro de bajada de la macro
+        int eF = 0;          // cuadro de subida de la macro
+        int pF = 0;          // cuadro en que el jugador pulso (si acerto)
+        bool hasRel = false; // true = hold largo explicito: el soltar tambien se juzga
         uint8_t press = NotePending;
         uint8_t release = NoteSkipped;
     };
@@ -1577,11 +1628,19 @@ protected:
         bool wasVisible;
     };
 
+    struct Box {
+        float x, y, w, h;
+    };
+
+    // Como se recorta / ancla una barra de hold respecto al receptor.
+    enum class BarMode { Free, Clip, Pin };
+
     inline static RhythmBar* s_instance = nullptr;
 
     rpb::Macro m_macro;
     std::vector<Click> m_clicks;
     double m_fps = 240.0;
+    int m_outer = 60;           // ventana exterior en cuadros
     size_t m_pCursor = 0;       // primer clic cuyo "pulsar" aun no expiro
     size_t m_rCursor = 0;       // primer clic con algo sin resolver
     size_t m_active = kNone;    // clic de la macro que el jugador esta sosteniendo (acertado)
@@ -1590,20 +1649,27 @@ protected:
     Config m_cfg;
     std::string m_macroKey;
 
-    float m_w = 0.f;
+    // geometria actual
+    BarDir m_dir = BarDir::LeftToRight;
+    bool m_vertical = false;
+    bool m_miniOn = true;
+    float m_len = 0.f;      // largo a lo largo del recorrido
+    float m_thick = 0.f;    // grosor
+    float m_w = 0.f;        // tamano real del contenedor
     float m_h = 0.f;
-    float m_recX = 0.f;   // posicion X del receptor dentro de la barra
-    float m_cell = 8.f;   // ancho de 1 frame en la mini-barra
+    float m_recS = 0.f;     // posicion del receptor sobre el eje de recorrido
+    float m_hudX = 0.f;     // X (local) donde se centran mini-barra y cartel de juicio
+    float m_textY = 0.f;    // Y (local) del cartel de juicio
+    float m_cell = 8.f;     // ancho de 1 frame en la mini-barra
 
     // Rectangulos solidos fijos: se crean una sola vez (buildStatic) y se redimensionan (applyLayout).
     CCLayerColor* m_bg = nullptr;      // fondo de la barra
     CCLayerColor* m_zone = nullptr;    // zona sombreada alrededor del receptor
     CCLayerColor* m_edge[4] = {};      // borde: abajo, arriba, izquierda, derecha
     CCLayerColor* m_flashG = nullptr;  // destello verde (presionar)
-    CCLayerColor* m_flashB = nullptr;  // destello celeste (soltar)
     CCLayerColor* m_line = nullptr;    // linea receptora
 
-    // Mini-barra de micro-frames (sobre el receptor)
+    // Mini-barra de micro-frames (sobre la barra)
     CCLayerColor* m_microBg = nullptr;
     CCLayerColor* m_microG = nullptr;  // +-3 frames
     CCLayerColor* m_microL = nullptr;  // +-1 frame
@@ -1617,9 +1683,10 @@ protected:
     std::vector<CCLayerColor*> m_pool;
     size_t m_used = 0;
 
-    std::vector<TrailEntry> m_trail;   // historial de clics del jugador
+    std::vector<TrailEntry> m_trail;   // historial de clics del jugador (tiempo visual)
     bool m_synced = false;
-    double m_lastNow = 0.0;
+    int m_lastFrame = 0;               // ultimo cuadro visto por el juicio
+    double m_lastVis = 0.0;            // ultimo tiempo visual dibujado
     double m_clock = 0.0;
     double m_labelDieAt = 0.0;
     float m_pollTimer = 0.f;
@@ -1677,7 +1744,8 @@ public:
         const Config c = loadConfig();
         const bool relayout = force || c.barWidthPct != m_cfg.barWidthPct ||
                               c.barThickness != m_cfg.barThickness || c.barY != m_cfg.barY ||
-                              c.bgOpacity != m_cfg.bgOpacity || c.lookahead != m_cfg.lookahead;
+                              c.bgOpacity != m_cfg.bgOpacity || c.lookahead != m_cfg.lookahead ||
+                              c.dir != m_cfg.dir || c.showMiniBar != m_cfg.showMiniBar;
         const bool redraw = relayout || c.offset != m_cfg.offset;
         const auto key = macroKey(c);
         const bool macroChanged = key != m_macroKey;
@@ -1702,23 +1770,28 @@ public:
     }
 
     // Entrada del jugador (P1, salto) tal como la entrega el juego en cada paso de fisica.
+    //
+    // PASO DE TIEMPO: el juicio usa el cuadro entero de fisica en el que el juego APLICA el clic
+    // (llround(m_levelTime * fps)), sin Desfase ni ninguna correccion en milisegundos. El Desfase
+    // visual solo entra al dibujo (rastro del jugador), nunca al cuadro que se compara con la macro.
     void onInput(bool down, double levelTime) {
         if (!m_cfg.enabled || m_finished) return;
-        const double t = levelTime - m_cfg.offset;
-        if (!m_synced) this->resync(t, true, false);
+        const int frame = this->stepFrame(levelTime);  // juicio
+        const double tv = levelTime - m_cfg.offset;    // dibujo
+        if (!m_synced) this->resync(frame, true, false);
 
         if (down) {
             this->flashDown();
-            m_trail.push_back({t, t, true});
+            m_trail.push_back({tv, tv, true});
             if (m_trail.size() > kMaxTrail) m_trail.erase(m_trail.begin());
-            this->judgePress(t);
+            this->judgePress(frame);
         } else {
             this->flashUp();
             if (!m_trail.empty() && m_trail.back().open) {
-                m_trail.back().end = t;
+                m_trail.back().end = tv;
                 m_trail.back().open = false;
             }
-            this->judgeRelease(t);
+            this->judgeRelease(frame);
         }
     }
 
@@ -1736,10 +1809,13 @@ public:
         this->syncLevelVisibility();
         if (!m_cfg.enabled) return;
 
-        // offset positivo = las notas llegan mas tarde
-        const double now = currentLevelTime(pl) - m_cfg.offset;
-        if (!m_finished) this->advanceJudge(now);
-        if (this->isVisible()) this->refresh(now);
+        const double levelTime = currentLevelTime(pl);
+        // juicio: cuadros enteros, sin Desfase
+        if (!m_finished) this->advanceJudge(this->stepFrame(levelTime));
+        // dibujo: con Desfase visual (positivo = las notas llegan mas tarde)
+        const double nowV = levelTime - m_cfg.offset;
+        m_lastVis = nowV;
+        if (this->isVisible()) this->refresh(nowV);
 
         if (m_label && m_clock >= m_labelDieAt) {
             m_label->removeFromParent();
@@ -1795,7 +1871,7 @@ public:
 private:
     double currentNow() {
         auto pl = PlayLayer::get();
-        return pl ? currentLevelTime(pl) - m_cfg.offset : m_lastNow;
+        return pl ? currentLevelTime(pl) - m_cfg.offset : m_lastVis;
     }
 
     // Porcentaje del nivel en este momento (eje X de la grafica de resultados).
@@ -1803,13 +1879,15 @@ private:
         return currentLevelPercent(PlayLayer::get());
     }
 
-    int toFrames(double seconds) const {
-        return static_cast<int>(std::llround(seconds * m_fps));
+    // Tiempo de fisica -> cuadro entero. Es el UNICO punto de conversion del juicio.
+    int stepFrame(double levelTime) const {
+        return static_cast<int>(std::llround(levelTime * m_fps)) + kInputFrameBias;
     }
 
     void setMacro(rpb::Macro macro, double fps) {
         m_macro = std::move(macro);
         m_fps = fps > 0.0 ? fps : 240.0;
+        m_outer = std::max(1, static_cast<int>(std::llround(kOuterWin * m_fps)));
 
         m_clicks.clear();
         m_clicks.reserve(m_macro.clicks.size());
@@ -1817,7 +1895,9 @@ private:
             Click c;
             c.start = h.start;
             c.end = h.end;
-            c.hasRel = h.hold && h.end > h.start;  // solo holds largos explicitos se juzgan al soltar
+            c.sF = static_cast<int>(std::llround(h.start * m_fps));
+            c.eF = static_cast<int>(std::llround(h.end * m_fps));
+            c.hasRel = h.hold && c.eF > c.sF;  // solo holds largos explicitos se juzgan al soltar
             c.release = c.hasRel ? NotePending : NoteSkipped;
             m_clicks.push_back(c);
         }
@@ -1880,7 +1960,39 @@ private:
         m_hidden.clear();
     }
 
-    // ---- layout ----
+    // ---- geometria ----
+
+    // Rango [s0, s1] sobre el eje de recorrido y [c0, c1] sobre el transversal -> rectangulo local.
+    Box box(float s0, float s1, float c0, float c1) const {
+        if (s1 < s0) std::swap(s0, s1);
+        if (c1 < c0) std::swap(c0, c1);
+        const float ds = s1 - s0;
+        const float dc = c1 - c0;
+        switch (m_dir) {
+            case BarDir::RightToLeft: return {m_len - s1, c0, ds, dc};
+            case BarDir::BottomToTop: return {c0, s0, dc, ds};
+            case BarDir::TopToBottom: return {c0, m_len - s1, dc, ds};
+            case BarDir::LeftToRight: break;
+        }
+        return {s0, c0, ds, dc};
+    }
+
+    void place(CCLayerColor* node, Box const& b) {
+        resizeSolid(node, b.w, b.h, b.x, b.y);
+    }
+
+    // Posicion s de un instante t cuando "ahora" es `now`: el receptor esta en m_recS y las notas
+    // futuras entran desde s = 0. px por segundo = m_recS / lookahead, o sea que la velocidad del
+    // popup multiplica directamente cuanto se desplazan las notas por segundo.
+    float sAt(double t, double now) const {
+        const double speed = m_recS / m_cfg.lookahead;  // px por segundo
+        return static_cast<float>(m_recS - (t - now) * speed);
+    }
+
+    // Segundos que tarda una nota en salir por el borde de salida despues de cruzar el receptor.
+    double tailSeconds() const {
+        return (m_len - m_recS) * m_cfg.lookahead / std::max(m_recS, 1.f);
+    }
 
     // Crea los rectangulos solidos UNA sola vez. El tamano real lo pone applyLayout().
     void buildStatic() {
@@ -1893,12 +2005,9 @@ private:
         m_layer = CCNode::create();
         this->addChild(m_layer, 1);
 
-        // destellos del receptor: verde (exterior, al presionar) y celeste (interior, al soltar)
+        // destello verde del receptor (al presionar). Ya no hay destello celeste.
         m_flashG = makeSolid(ccColor4B{60, 255, 100, 0}, 1.f, 1.f);
         this->addChild(m_flashG, 2);
-
-        m_flashB = makeSolid(ccColor4B{80, 220, 255, 0}, 1.f, 1.f);
-        this->addChild(m_flashB, 3);
 
         // mini-barra de micro-frames: fondo + zonas (+-3 verde, +-1 lima, 0 cian) + 2 marcadores
         m_microBg = makeSolid(ccColor4B{10, 12, 22, 175}, 1.f, 1.f);
@@ -1920,7 +2029,7 @@ private:
             this->addChild(e, 5);
         }
 
-        // linea receptora (timing line): sobresale un poco por arriba y por abajo
+        // linea receptora (timing line): sobresale un poco por los dos lados
         m_line = makeSolid(ccColor4B{255, 255, 255, 255}, 1.f, 1.f);
         this->addChild(m_line, 6);
 
@@ -1933,16 +2042,33 @@ private:
         this->addChild(m_combo, 9);
     }
 
-    // Aplica largo / grosor / altura / fondo / velocidad actuales con setContentSize + setPosition.
+    // Aplica largo / grosor / altura / fondo / velocidad / direccion actuales con
+    // setContentSize + setPosition.
     void applyLayout() {
         const auto win = CCDirector::get()->getWinSize();
         const float margin = 10.f;
-        m_w = std::max(40.f, std::min(win.width * m_cfg.barWidthPct / 100.f, win.width - 2.f * margin));
-        m_h = std::max(16.f, m_cfg.barThickness);
-        m_recX = m_w * kReceptorFrac;
 
-        // Altura Barra: sube todo el contenedor, sin dejar que se salga por arriba.
-        const float maxY = std::max(0.f, win.height - margin - m_h - kTopExtra);
+        m_dir = static_cast<BarDir>(std::clamp(m_cfg.dir, 0, 3));
+        m_vertical = m_dir == BarDir::TopToBottom || m_dir == BarDir::BottomToTop;
+        m_miniOn = m_cfg.showMiniBar;
+        const float topExtra = m_miniOn ? kTopExtra : kTopExtraLite;
+
+        m_thick = std::max(16.f, m_cfg.barThickness);
+        if (m_vertical) {
+            // en vertical el "Largo" es un % del ALTO de la pantalla (sin pasarse por arriba)
+            const float maxLen = std::max(40.f, win.height - 2.f * margin - topExtra);
+            m_len = std::max(40.f, std::min(win.height * m_cfg.barWidthPct / 100.f, maxLen));
+            m_w = m_thick;
+            m_h = m_len;
+        } else {
+            m_len = std::max(40.f, std::min(win.width * m_cfg.barWidthPct / 100.f, win.width - 2.f * margin));
+            m_w = m_len;
+            m_h = m_thick;
+        }
+        m_recS = m_len * kReceptorFrac;
+
+        // Altura Barra: sube toda la estructura, sin dejar que se salga por arriba.
+        const float maxY = std::max(0.f, win.height - margin - m_h - topExtra);
         const float y = margin + std::clamp(m_cfg.barY, 0.f, maxY);
 
         this->setContentSize({m_w, m_h});
@@ -1955,13 +2081,10 @@ private:
         resizeSolid(m_bg, m_w, m_h, 0.f, 0.f);
 
         // zona sombreada alrededor del receptor (referencia visual), sin salirse de la barra
-        const float half = static_cast<float>(kZoneWin * m_recX / m_cfg.lookahead);
-        const float zl = std::max(0.f, m_recX - half);
-        const float zr = std::min(m_w, m_recX + half);
-        resizeSolid(m_zone, zr - zl, m_h, zl, 0.f);
+        const float half = static_cast<float>(kZoneWin * m_recS / m_cfg.lookahead);
+        this->place(m_zone, this->box(std::max(0.f, m_recS - half), std::min(m_len, m_recS + half), 0.f, m_thick));
 
-        resizeSolid(m_flashG, 34.f, m_h, m_recX - 17.f, 0.f);
-        resizeSolid(m_flashB, 16.f, m_h, m_recX - 8.f, 0.f);
+        this->place(m_flashG, this->box(std::max(0.f, m_recS - 17.f), std::min(m_len, m_recS + 17.f), 0.f, m_thick));
 
         const float b = 2.f;
         resizeSolid(m_edge[0], m_w, b, 0.f, 0.f);          // abajo
@@ -1969,26 +2092,50 @@ private:
         resizeSolid(m_edge[2], b, m_h, 0.f, 0.f);          // izquierda
         resizeSolid(m_edge[3], b, m_h, m_w - b, 0.f);      // derecha
 
-        resizeSolid(m_line, 4.f, m_h + 10.f, m_recX - 2.f, -5.f);
+        this->place(m_line, this->box(m_recS - 2.f, m_recS + 2.f, -5.f, m_thick + 5.f));
 
-        // mini-barra de micro-frames, centrada sobre el receptor
-        m_cell = std::clamp(m_w / 24.f, 3.f, 8.f);
+        // centro horizontal del HUD (mini-barra + cartel): el receptor si la barra es horizontal,
+        // el centro de la barra si es vertical
+        const Box rb = this->box(m_recS - 1.f, m_recS + 1.f, 0.f, m_thick);
+        m_hudX = rb.x + rb.w * 0.5f;
+
+        // mini-barra de micro-frames, centrada sobre m_hudX y por encima de la barra
+        m_cell = std::clamp(m_len / 24.f, 3.f, 8.f);
         const float my = m_h + 4.f;
         const float halfMicro = (static_cast<float>(kMicroRange) + 0.5f) * m_cell;
-        resizeSolid(m_microBg, 2.f * halfMicro, kMicroH, m_recX - halfMicro, my);
+        resizeSolid(m_microBg, 2.f * halfMicro, kMicroH, m_hudX - halfMicro, my);
         const float g = (static_cast<float>(kPerfectFrames) + 0.5f) * m_cell;
-        resizeSolid(m_microG, 2.f * g, kMicroH, m_recX - g, my);
+        resizeSolid(m_microG, 2.f * g, kMicroH, m_hudX - g, my);
         const float l = (static_cast<float>(kPerfectPlusFrames) + 0.5f) * m_cell;
-        resizeSolid(m_microL, 2.f * l, kMicroH, m_recX - l, my);
-        resizeSolid(m_microC, m_cell, kMicroH, m_recX - m_cell / 2.f, my);
+        resizeSolid(m_microL, 2.f * l, kMicroH, m_hudX - l, my);
+        resizeSolid(m_microC, m_cell, kMicroH, m_hudX - m_cell / 2.f, my);
         for (auto mk : {m_markP, m_markH}) {
             if (mk) {
                 mk->stopAllActions();
                 mk->setOpacity(0);
             }
         }
+        // casilla "Mini-Barra Superior": setVisible(false) limpia por completo la mini-barra
+        for (auto n : {m_microBg, m_microG, m_microL, m_microC, m_markP, m_markH}) {
+            if (n) n->setVisible(m_miniOn);
+        }
 
-        if (m_combo) m_combo->setPosition({4.f, m_h + 4.f + kMicroH + 12.f});
+        // cartel de juicio y combo (suben o bajan segun haya mini-barra)
+        m_textY = my + (m_miniOn ? kMicroH + 14.f : 10.f);
+        if (m_combo) {
+            if (m_vertical) {
+                // al costado de la barra, a la altura del receptor
+                m_combo->setAnchorPoint({0.f, 0.5f});
+                m_combo->setPosition({m_w + 10.f, rb.y + rb.h * 0.5f});
+            } else if (m_dir == BarDir::RightToLeft) {
+                // el receptor queda a la izquierda: el combo va al otro lado
+                m_combo->setAnchorPoint({1.f, 0.5f});
+                m_combo->setPosition({m_w - 4.f, m_textY - 2.f});
+            } else {
+                m_combo->setAnchorPoint({0.f, 0.5f});
+                m_combo->setPosition({4.f, m_textY - 2.f});
+            }
+        }
     }
 
     // ---- destellos ----
@@ -1998,10 +2145,6 @@ private:
             m_flashG->stopAllActions();
             m_flashG->setOpacity(255);
             m_flashG->runAction(CCFadeTo::create(0.10f, 110));  // queda un brillo mientras se mantiene
-        }
-        if (m_flashB) {
-            m_flashB->stopAllActions();
-            m_flashB->setOpacity(0);
         }
         if (m_line) {
             m_line->stopAllActions();
@@ -2014,26 +2157,22 @@ private:
             m_flashG->stopAllActions();
             m_flashG->runAction(CCFadeTo::create(0.22f, 0));
         }
-        if (m_flashB) {
-            m_flashB->stopAllActions();
-            m_flashB->setOpacity(255);
-            m_flashB->runAction(CCFadeTo::create(0.22f, 0));
-        }
         if (m_line) {
             m_line->stopAllActions();
-            m_line->setColor(kColCyan);  // celeste al soltar, vuelve a blanco
-            m_line->runAction(CCTintTo::create(0.25f, 255, 255, 255));
+            m_line->runAction(CCTintTo::create(0.25f, 255, 255, 255));  // vuelve a blanco (sin celeste)
         }
     }
 
     // ---- mini-barra y combo ----
 
-    // Marca en la mini-barra cuantos frames de diferencia hubo (negativo = temprano, a la izquierda).
+    // Marca en la mini-barra cuantos frames de diferencia hubo (negativo = temprano, a la izquierda;
+    // en "Der > Izq" se refleja para que "temprano" quede del lado de donde vienen las notas).
     // upper = true: frame del clic (blanco); false: error del hold al soltar (dorado).
     void placeMarker(CCLayerColor* mark, int frames, bool upper) {
         if (!mark) return;
+        const float sign = m_dir == BarDir::RightToLeft ? -1.f : 1.f;
         const int e = std::clamp(frames, -kMicroRange, kMicroRange);
-        const float cx = m_recX + static_cast<float>(e) * m_cell;
+        const float cx = m_hudX + sign * static_cast<float>(e) * m_cell;
         const float mw = 3.f;
         const float halfH = kMicroH / 2.f;
         const float my = m_h + 4.f;
@@ -2072,7 +2211,7 @@ private:
         m_label = CCLabelBMFont::create(st.text, "bigFont.fnt");
         m_label->setColor(st.color);
         m_label->setScale(0.3f);
-        m_label->setPosition({m_recX, m_h + 4.f + kMicroH + 14.f});
+        m_label->setPosition({m_hudX, m_textY});
         this->addChild(m_label, 10);
 
         CCFiniteTimeAction* grow = CCEaseBackOut::create(CCScaleTo::create(0.14f, 0.55f));
@@ -2094,18 +2233,18 @@ private:
         this->placeMarker(isPress ? m_markP : m_markH, frames, isPress);
     }
 
-    // Pulsar: busca el clic pendiente mas cercano dentro de la ventana exterior y compara FRAMES.
-    // Este es el juicio principal: el frame exacto de impacto de bajada (el Press).
-    void judgePress(double t) {
+    // Pulsar: busca el clic pendiente mas cercano dentro de la ventana exterior y compara CUADROS
+    // ENTEROS (cuadro del jugador - cuadro de la macro). Es el juicio principal.
+    void judgePress(int f) {
         m_active = kNone;
-        auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), t - kOuterWin,
-                                   [](Click const& c, double v) { return c.start < v; });
+        auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), f - m_outer,
+                                   [](Click const& c, int v) { return c.sF < v; });
         size_t best = kNone;
-        double bestAbs = 1e9;
+        int bestAbs = 1 << 30;
         for (size_t i = static_cast<size_t>(it - m_clicks.begin());
-             i < m_clicks.size() && m_clicks[i].start <= t + kOuterWin; ++i) {
+             i < m_clicks.size() && m_clicks[i].sF <= f + m_outer; ++i) {
             if (m_clicks[i].press != NotePending) continue;
-            const double a = std::fabs(t - m_clicks[i].start);
+            const int a = std::abs(f - m_clicks[i].sF);
             if (a < bestAbs) {
                 bestAbs = a;
                 best = i;
@@ -2115,16 +2254,16 @@ private:
 
         auto& c = m_clicks[best];
         c.press = NoteHit;
-        c.playerPress = t;
+        c.pF = f;
         m_active = best;
 
-        const int d = this->toFrames(t - c.start);
+        const int d = f - c.sF;
         this->registerJudge(classifyFrames(d), d, true);
     }
 
     // Soltar: SOLO para holds largos explicitos de la macro. Compara la DURACION del hold del
-    // jugador (frames) con la del hold de la macro. En un clic comun no se evalua nada al soltar.
-    void judgeRelease(double t) {
+    // jugador (cuadros) con la del hold de la macro. En un clic comun no se evalua nada al soltar.
+    void judgeRelease(int f) {
         if (m_active == kNone || m_active >= m_clicks.size()) {
             m_active = kNone;
             return;
@@ -2133,8 +2272,8 @@ private:
         m_active = kNone;
         if (!c.hasRel || c.release != NotePending) return;  // clic comun, o ya expiro (Fallo)
 
-        const int playerHold = this->toFrames(t - c.playerPress);
-        const int macroHold = this->toFrames(c.end - c.start);
+        const int playerHold = f - c.pF;
+        const int macroHold = c.eF - c.sF;
         const int d = playerHold - macroHold;
         c.release = NoteHit;
         this->registerJudge(classifyFrames(d), d, false);
@@ -2143,12 +2282,12 @@ private:
     // Tiempo expirado sin accion = Fallo. Devuelve cuantos fallos nuevos hubo.
     //  - pulsar: el clic no se pulso dentro de la ventana; su "soltar" ya no cuenta (un Fallo por clic)
     //  - soltar: solo holds largos: el jugador pulso pero no solto a tiempo
-    //            (pulsacion + duracion del hold + ventana)
-    int expire(double now) {
+    //            (cuadro de pulsacion + duracion del hold + ventana)
+    int expire(int nowF) {
         int missed = 0;
         const float pct = this->percentNow();
 
-        while (m_pCursor < m_clicks.size() && m_clicks[m_pCursor].start + kOuterWin < now) {
+        while (m_pCursor < m_clicks.size() && m_clicks[m_pCursor].sF + m_outer < nowF) {
             auto& c = m_clicks[m_pCursor];
             if (c.press == NotePending) {
                 c.press = NoteMissed;
@@ -2161,10 +2300,10 @@ private:
 
         for (size_t i = m_rCursor; i < m_clicks.size(); ++i) {
             auto& c = m_clicks[i];
-            if (c.start > now) break;
+            if (c.sF > nowF) break;
             if (c.press == NoteHit && c.hasRel && c.release == NotePending) {
-                const double deadline = c.playerPress + (c.end - c.start) + kOuterWin;
-                if (now > deadline) {
+                const int deadline = c.pF + (c.eF - c.sF) + m_outer;
+                if (nowF > deadline) {
                     c.release = NoteMissed;
                     m_stats.add(Judge::Miss, pct);
                     ++missed;
@@ -2183,10 +2322,10 @@ private:
     }
 
     // Tras un reinicio, un checkpoint o un salto grande de tiempo: se vuelve a empezar
-    // desde el tiempo actual sin castigar las notas que quedaron atras.
+    // desde el cuadro actual sin castigar las notas que quedaron atras.
     //  fresh   = primera sincronizacion con esta macro: estadisticas a cero
     //  rewound = el tiempo retrocedio: a cero salvo en modo practica (checkpoints)
-    void resync(double now, bool fresh, bool rewound) {
+    void resync(int nowF, bool fresh, bool rewound) {
         bool resetStats = fresh;
         if (rewound) {
             auto pl = PlayLayer::get();
@@ -2197,14 +2336,14 @@ private:
         else m_stats.combo = 0;
         this->updateComboLabel(false);
 
-        const auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), now - kOuterWin,
-                                         [](Click const& c, double v) { return c.start < v; });
+        const auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), nowF - m_outer,
+                                         [](Click const& c, int v) { return c.sF < v; });
         m_pCursor = static_cast<size_t>(it - m_clicks.begin());
         m_rCursor = m_pCursor;
         m_active = kNone;
         for (size_t i = 0; i < m_clicks.size(); ++i) {
             auto& c = m_clicks[i];
-            c.playerPress = 0.0;
+            c.pF = 0;
             if (i < m_pCursor) {
                 c.press = NoteSkipped;
                 c.release = NoteSkipped;
@@ -2219,26 +2358,22 @@ private:
             m_flashG->stopAllActions();
             m_flashG->setOpacity(0);
         }
-        if (m_flashB) {
-            m_flashB->stopAllActions();
-            m_flashB->setOpacity(0);
-        }
         if (m_line) {
             m_line->stopAllActions();
             m_line->setColor(kColWhite);
         }
         m_synced = true;
-        m_lastNow = now;
+        m_lastFrame = nowF;
     }
 
-    void advanceJudge(double now) {
+    void advanceJudge(int nowF) {
         const bool fresh = !m_synced;
-        const bool rewound = m_synced && now < m_lastNow - 1e-6;
-        const bool jumped = m_synced && now - m_lastNow > 0.5;
-        if (fresh || rewound || jumped) this->resync(now, fresh, rewound);
-        m_lastNow = now;
+        const bool rewound = m_synced && nowF < m_lastFrame;
+        const bool jumped = m_synced && nowF - m_lastFrame > static_cast<int>(std::llround(0.5 * m_fps));
+        if (fresh || rewound || jumped) this->resync(nowF, fresh, rewound);
+        m_lastFrame = nowF;
 
-        const int missed = this->expire(now);
+        const int missed = this->expire(nowF);
         if (missed > 0) {
             this->spawnJudgment(Judge::Miss);  // un solo cartel por frame
             this->updateComboLabel(false);     // el Fallo ya reinicio el combo en m_stats
@@ -2257,20 +2392,7 @@ private:
 
     // ---- dibujo ----
 
-    // X dentro de la barra: receptor en m_recX, las notas futuras entran por la izquierda
-    // y viajan hacia la derecha. px por segundo = m_recX / lookahead, o sea que la velocidad
-    // del popup multiplica directamente cuanto se desplazan las notas por segundo.
-    float xAt(double t, double now) const {
-        const double speed = m_recX / m_cfg.lookahead;  // px por segundo
-        return static_cast<float>(m_recX - (t - now) * speed);
-    }
-
-    // Segundos que tarda una nota en salir por el borde derecho despues de cruzar el receptor.
-    double tailSeconds() const {
-        return (m_w - m_recX) * m_cfg.lookahead / std::max(m_recX, 1.f);
-    }
-
-    void slot(ccColor3B color, GLubyte alpha, float x, float y, float w, float h) {
+    void slot(ccColor3B color, GLubyte alpha, Box const& b) {
         if (m_used >= kMaxSlots || !m_layer) return;
         CCLayerColor* node;
         if (m_used < m_pool.size()) {
@@ -2283,85 +2405,142 @@ private:
         ++m_used;
         node->setColor(color);
         node->setOpacity(alpha);
-        node->setContentSize({std::max(w, 1.f), std::max(h, 1.f)});
-        node->setPosition({x, y});
+        node->setContentSize({std::max(b.w, 1.f), std::max(b.h, 1.f)});
+        node->setPosition({b.x, b.y});
         node->setVisible(true);
     }
 
-    void drawNote(double t, uint8_t state, ccColor3B color, float width, double now) {
-        if (state == NoteHit) return;  // acertada: desaparece
-        const float x = this->xAt(t, now);
-        if (x > m_w + width) return;   // ya salio por el borde derecho
-        ccColor3B c = color;
+    // Contenedor (nota) de `along` px a lo largo del recorrido, ocupando [c0, c1] del grosor.
+    // Una nota acertada desaparece; una perdida se pone roja; una saltada, tenue.
+    void drawContainer(double t, uint8_t state, ccColor3B color, float c0, float c1, float along,
+                       double now) {
+        if (state == NoteHit) return;
+        const float s = this->sAt(t, now);
+        if (s - along / 2.f > m_len || s + along / 2.f < 0.f) return;  // fuera de la barra
+        ccColor3B col = color;
         GLubyte a = 255;
         if (state == NoteMissed) {
-            c = kColRed;
+            col = kColRed;
             a = 200;
         } else if (state == NoteSkipped) {
             a = 110;
         }
-        const float left = std::clamp(x - width / 2.f, 0.f, std::max(m_w - width, 0.f));
-        slot(c, a, left, 4.f, width, m_h - 8.f);
+        const float s0 = std::clamp(s - along / 2.f, 0.f, std::max(m_len - along, 0.f));
+        this->slot(col, a, this->box(s0, s0 + along, c0, c1));
     }
 
-    // Verde: pulsar (todos los clics). Celeste: soltar (SOLO los holds largos de la macro).
-    void drawNotes(double now) {
-        const double from = now - this->tailSeconds();
-        const double to = now + m_cfg.lookahead;
-        const auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), from,
-                                         [](Click const& c, double v) { return c.end < v; });
-        for (size_t i = static_cast<size_t>(it - m_clicks.begin());
-             i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
-            auto const& c = m_clicks[i];
-            if (c.start >= from) this->drawNote(c.start, c.press, kColGreen, kNoteWidth, now);
-            if (c.hasRel && c.end >= from && c.end <= to) {
-                this->drawNote(c.end, c.release, kColCyan, kReleaseWidth, now);
+    // Cuerpo del hold entre el contenedor de bajada (t0) y el de subida (t1).
+    //   Free: tal cual.  Clip: se corta en el receptor (lo que ya paso desaparece).
+    //   Pin: la cabeza queda anclada al receptor y el resto se va consumiendo (hold sostenido).
+    void drawBar(double t0, double t1, ccColor3B color, GLubyte alpha, float c0, float c1,
+                 double now, BarMode mode) {
+        float sHead = this->sAt(t0, now);  // lado del receptor
+        const float sTail = this->sAt(t1, now);  // lado del origen
+        if (mode == BarMode::Pin) sHead = m_recS;
+        else if (mode == BarMode::Clip) sHead = std::min(sHead, m_recS);
+        const float lo = std::clamp(sTail, 0.f, m_len);
+        const float hi = std::clamp(sHead, 0.f, m_len);
+        if (hi - lo < 1.f) return;
+        this->slot(color, alpha, this->box(lo, hi, c0, c1));
+    }
+
+    // Barra de hold de P1 (verde), segun el estado del clic.
+    void drawHoldP1(Click const& c, double now) {
+        if (!c.hasRel) return;
+        const float c0 = m_thick * 0.25f;
+        const float c1 = m_thick * 0.75f;
+        if (c.press == NoteHit) {
+            // el jugador lo esta sosteniendo: cabeza anclada al receptor, el hold se consume
+            if (c.release == NotePending) {
+                this->drawBar(c.start, c.end, kColGreen, 215, c0, c1, now, BarMode::Pin);
             }
+            return;
+        }
+        if (c.press == NoteMissed) {
+            this->drawBar(c.start, c.end, kColRed, 120, c0, c1, now, BarMode::Free);
+        } else if (c.press == NoteSkipped) {
+            this->drawBar(c.start, c.end, kColGreen, 70, c0, c1, now, BarMode::Free);
+        } else {
+            this->drawBar(c.start, c.end, kColGreen, 150, c0, c1, now, BarMode::Free);
         }
     }
 
-    // Barra translucida continua entre el press y el release de la macro.
-    void drawHold(rpb::Hold const& h, double now) {
-        const double a = std::max(h.start, now);
-        const double b = std::min(h.end, now + m_cfg.lookahead);
-        if (b <= a) return;
-        const float xa = this->xAt(a, now);  // mas cerca del receptor (derecha)
-        const float xb = this->xAt(b, now);  // mas lejos (izquierda)
-        const float lo = std::clamp(xb, 0.f, m_w);
-        const float hi = std::clamp(xa, 0.f, m_w);
-        const float bh = m_h * 0.5f;
-        slot(kColGreen, 110, lo, (m_h - bh) / 2.f, hi - lo, bh);
+    // Barra de hold de P2 (morado claro): solo visual, se corta en el receptor.
+    void drawHoldP2(rpb::Hold const& h, double now) {
+        if (!h.hold) return;
+        this->drawBar(h.start, h.end, kColLightPurple, 205, m_thick * 0.36f, m_thick * 0.64f, now,
+                      BarMode::Clip);
     }
 
-    // Huella de lo que el jugador esta haciendo: franja delgada abajo, translucida,
-    // continua desde el press hasta el release (crece mientras se mantiene el boton).
+    // Contenedores verdes de P1: bajada (cabeza) y, en holds largos, subida (cola).
+    void drawEndsP1(Click const& c, double from, double now) {
+        const float c0 = 4.f;
+        const float c1 = std::max(m_thick - 4.f, 5.f);
+        if (c.start >= from) this->drawContainer(c.start, c.press, kColGreen, c0, c1, kNoteWidth, now);
+        if (c.hasRel && c.end >= from) {
+            uint8_t tailState = c.release;
+            if (c.press == NoteMissed) tailState = NoteMissed;
+            else if (c.press == NoteSkipped) tailState = NoteSkipped;
+            this->drawContainer(c.end, tailState, kColGreen, c0, c1, kNoteWidth, now);
+        }
+    }
+
+    // Contenedores morados claros de P2 (solo los que aun no llegaron al receptor).
+    void drawEndsP2(rpb::Hold const& h, double now) {
+        const float c0 = m_thick * 0.28f;
+        const float c1 = m_thick * 0.72f;
+        if (h.start >= now) {
+            this->drawContainer(h.start, NotePending, kColLightPurple, c0, c1, kNoteWidth, now);
+        }
+        if (h.hold && h.end >= now) {
+            this->drawContainer(h.end, NotePending, kColLightPurple, c0, c1, kNoteWidth, now);
+        }
+    }
+
+    // Huella de lo que el jugador esta haciendo: franja delgada en el borde transversal inicial,
+    // translucida, continua desde el press hasta el release (crece mientras se mantiene el boton).
     void drawTrail(double now) {
         const double tail = this->tailSeconds();
         while (!m_trail.empty() && !m_trail.front().open && m_trail.front().end < now - tail - 0.1) {
             m_trail.erase(m_trail.begin());
         }
-        const float sh = std::clamp(m_h * 0.18f, 4.f, 10.f);
+        const float sh = std::clamp(m_thick * 0.18f, 4.f, 10.f);
         for (auto const& e : m_trail) {
             const double tb = e.open ? now : e.end;
-            const float xr = std::min(this->xAt(e.start, now), m_w);
-            const float xl = std::max(this->xAt(tb, now), 0.f);
-            if (xr <= 0.f || xl >= m_w) continue;
-            slot(ccColor3B{150, 255, 170}, 150, xl, 1.f, std::max(xr - xl, 3.f), sh);
+            const float sa = std::min(this->sAt(e.start, now), m_len);  // extremo del press (lado salida)
+            const float sb = std::max(this->sAt(tb, now), 0.f);         // extremo del release (lado entrada)
+            if (sa <= 0.f || sb >= m_len) continue;
+            const float len = std::max(sa - sb, 3.f);
+            this->slot(ccColor3B{150, 255, 170}, 150, this->box(sb, sb + len, 1.f, 1.f + sh));
         }
     }
 
     void refresh(double now) {
         m_used = 0;
 
-        // Los holds no se solapan (un solo boton), asi que estan ordenados por inicio y por fin.
-        auto hit = std::lower_bound(m_macro.holds.begin(), m_macro.holds.end(), now - kLinger,
-                                    [](rpb::Hold const& h, double t) { return h.end < t; });
-        for (; hit != m_macro.holds.end() && hit->start <= now + m_cfg.lookahead; ++hit) {
-            this->drawHold(*hit, now);
-        }
+        const double from = now - this->tailSeconds();
+        const double to = now + m_cfg.lookahead;
 
-        // Las notas van despues para quedar dibujadas encima de las barras.
-        this->drawNotes(now);
+        // clics de P1 visibles (ordenados por inicio y por fin: un solo boton, no se solapan)
+        const auto it1 = std::lower_bound(m_clicks.begin(), m_clicks.end(), from,
+                                          [](Click const& c, double v) { return c.end < v; });
+        const size_t a1 = static_cast<size_t>(it1 - m_clicks.begin());
+        // clics de P2 visibles (los que todavia no terminaron)
+        auto const& c2 = m_macro.clicks2;
+        const auto it2 = std::lower_bound(c2.begin(), c2.end(), now,
+                                          [](rpb::Hold const& h, double v) { return h.end < v; });
+        const size_t a2 = static_cast<size_t>(it2 - c2.begin());
+
+        // 1) cuerpos de hold P1  2) cuerpos de hold P2 (encima)  3) contenedores P1  4) contenedores P2
+        for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
+            this->drawHoldP1(m_clicks[i], now);
+        }
+        for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawHoldP2(c2[i], now);
+        for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
+            this->drawEndsP1(m_clicks[i], from, now);
+        }
+        for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawEndsP2(c2[i], now);
+
         this->drawTrail(now);
 
         for (size_t i = m_used; i < m_pool.size(); ++i) m_pool[i]->setVisible(false);
@@ -2417,9 +2596,9 @@ RhythmBar* ensureBar(PlayLayer* pl, bool forceNew = false) {
 //
 // Tamano 420 x 300 (la pantalla de GD mide 320 de alto). Posiciones (dx, dy) desde el centro.
 //
-//   columna izquierda:  x de -198 a  0     (6 ajustes con - / +)
+//   columna izquierda:  x de -198 a  0     (6 ajustes con - / +  +  fila de Direccion con < / >)
 //   separador vertical: x = +9
-//   columna derecha:    x de  +20 a +196   (biblioteca de macros, centro en +108)
+//   columna derecha:    x de  +20 a +196   (biblioteca de macros, centro en +108; casilla Mini-Barra)
 //   fila de abajo:      Restablecer, Modo Experimento, Ocultar Barra
 //   al final:           agregar macro por nombre + macro activa
 
@@ -2431,18 +2610,31 @@ protected:
 
     // filas de ajustes (columna izquierda) y de la lista (columna derecha)
     static constexpr float kRowY0 = 88.f;
-    static constexpr float kRowDY = 24.f;
+    static constexpr float kRowDY = 21.f;
     static constexpr float kRightCX = 108.f;
 
     CCLabelBMFont* m_values[kRowCount] = {};
+    CCLabelBMFont* m_dirValue = nullptr;
     CCLabelBMFont* m_pageLabel = nullptr;
     CCLabelBMFont* m_activeLabel = nullptr;
     CCMenuItemToggler* m_expToggle = nullptr;
     CCMenuItemToggler* m_hideToggle = nullptr;
+    CCMenuItemToggler* m_miniToggle = nullptr;
     TextInput* m_input = nullptr;
     std::vector<CCNode*> m_listNodes;
     std::vector<std::string> m_library;
     size_t m_page = 0;
+
+    // Casilla (toggle) con su texto a la derecha.
+    CCMenuItemToggler* addToggle(SEL_MenuHandler cb, float dx, float dy, bool on, char const* text,
+                                 float labelDx, float maxW) {
+        auto toggle = CCMenuItemToggler::createWithStandardSprites(this, cb, 0.6f);
+        toggle->setPosition(this->at(m_buttonMenu, dx, dy));
+        toggle->toggle(on);
+        m_buttonMenu->addChild(toggle);
+        fitLabel(this->addLabel(text, labelDx, dy, 0.3f, CCPoint{0.f, 0.5f}), 0.3f, maxW);
+        return toggle;
+    }
 
     bool init() {
         if (!Popup::init(kPopupW, kPopupH)) return false;
@@ -2453,8 +2645,8 @@ protected:
 
         // separador vertical entre las dos columnas
         {
-            auto divider = makeSolid(ccColor4B{0, 0, 0, 70}, 2.f, 150.f);
-            divider->setPosition(this->at(m_mainLayer, 9.f, -44.f));
+            auto divider = makeSolid(ccColor4B{0, 0, 0, 70}, 2.f, 160.f);
+            divider->setPosition(this->at(m_mainLayer, 9.f, -48.f));
             m_mainLayer->addChild(divider, 3);
         }
 
@@ -2464,45 +2656,42 @@ protected:
             const float y = kRowY0 - kRowDY * static_cast<float>(i);
             fitLabel(this->addLabel(kRows[i].label, -198.f, y, 0.34f, leftAnchor), 0.34f, 80.f);
             this->addButton("-", 26, true, -98.f, y, menu_selector(RhythmPopup::onStep),
-                            static_cast<int>(i) * 2, 22.f);
+                            static_cast<int>(i) * 2, 20.f);
             m_values[i] = this->addLabel("", -56.f, y, 0.38f);
             this->addButton("+", 26, true, -14.f, y, menu_selector(RhythmPopup::onStep),
-                            static_cast<int>(i) * 2 + 1, 22.f);
+                            static_cast<int>(i) * 2 + 1, 20.f);
+        }
+        // direccion en la que corren las notas (siguiente fila de la columna izquierda)
+        {
+            const float y = kRowY0 - kRowDY * static_cast<float>(kRowCount);
+            fitLabel(this->addLabel("Direccion", -198.f, y, 0.34f, leftAnchor), 0.34f, 80.f);
+            this->addButton("<", 26, true, -98.f, y, menu_selector(RhythmPopup::onDir), 0, 20.f);
+            m_dirValue = this->addLabel("", -56.f, y, 0.34f);
+            this->addButton(">", 26, true, -14.f, y, menu_selector(RhythmPopup::onDir), 1, 20.f);
         }
 
         // ---- columna derecha: biblioteca de macros ----
         this->addLabel("Biblioteca de Macros", kRightCX, 108.f, 0.35f, center, kColGold);
-        this->addButton("<", 28, false, 44.f, 14.f, menu_selector(RhythmPopup::onPage), 0, 22.f);
-        m_pageLabel = this->addLabel("1/1", kRightCX, 14.f, 0.4f);
-        this->addButton(">", 28, false, 172.f, 14.f, menu_selector(RhythmPopup::onPage), 1, 22.f);
-        this->addButton("Quitar", 70, false, kRightCX, -10.f, menu_selector(RhythmPopup::onRemove), 0,
-                        22.f, 0.5f);
+        this->addButton("<", 28, false, 44.f, 22.f, menu_selector(RhythmPopup::onPage), 0, 20.f);
+        m_pageLabel = this->addLabel("1/1", kRightCX, 22.f, 0.4f);
+        this->addButton(">", 28, false, 172.f, 22.f, menu_selector(RhythmPopup::onPage), 1, 20.f);
+        this->addButton("Quitar", 70, false, kRightCX, 0.f, menu_selector(RhythmPopup::onRemove), 0,
+                        20.f, 0.5f);
+
+        // casilla de la mini-barra segmentada superior
+        m_miniToggle = this->addToggle(menu_selector(RhythmPopup::onMiniBar), 36.f, -30.f,
+                                       miniBarSetting(), "Mini-Barra Superior", 52.f, 140.f);
 
         // ---- fila de abajo: Restablecer + dos casillas ----
-        this->addButton("Restablecer", 80, false, -148.f, -58.f, menu_selector(RhythmPopup::onReset), 0,
+        this->addButton("Restablecer", 80, false, -148.f, -62.f, menu_selector(RhythmPopup::onReset), 0,
                         22.f, 0.5f);
-
-        {
-            auto toggle = CCMenuItemToggler::createWithStandardSprites(
-                this, menu_selector(RhythmPopup::onExperiment), 0.65f);
-            toggle->setPosition(this->at(m_buttonMenu, -82.f, -58.f));
-            toggle->toggle(g_experiment);
-            m_buttonMenu->addChild(toggle);
-            m_expToggle = toggle;
-            fitLabel(this->addLabel("Modo Experimento", -66.f, -58.f, 0.3f, leftAnchor), 0.3f, 104.f);
-        }
-        {
-            auto toggle = CCMenuItemToggler::createWithStandardSprites(
-                this, menu_selector(RhythmPopup::onHideBar), 0.65f);
-            toggle->setPosition(this->at(m_buttonMenu, 58.f, -58.f));
-            toggle->toggle(hideBarSetting());
-            m_buttonMenu->addChild(toggle);
-            m_hideToggle = toggle;
-            fitLabel(this->addLabel("Ocultar Barra", 74.f, -58.f, 0.3f, leftAnchor), 0.3f, 110.f);
-        }
+        m_expToggle = this->addToggle(menu_selector(RhythmPopup::onExperiment), -82.f, -62.f,
+                                      g_experiment, "Modo Experimento", -66.f, 104.f);
+        m_hideToggle = this->addToggle(menu_selector(RhythmPopup::onHideBar), 58.f, -62.f,
+                                       hideBarSetting(), "Ocultar Barra", 74.f, 110.f);
 
         // ---- agregar una macro escribiendo solo su nombre ----
-        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -84.f, 0.3f, center, kColGold);
+        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -86.f, 0.3f, center, kColGold);
         m_input = TextInput::create(260.f, "ej: macro.gdr2", "bigFont.fnt");
         m_input->setFilter(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-()[]+,'&!#@%=/\\:");
@@ -2523,6 +2712,10 @@ protected:
             const auto v = rowValue(kRows[i]);
             m_values[i]->setString((std::to_string(v) + kRows[i].suffix).c_str());
             fitLabel(m_values[i], 0.38f, 44.f);
+        }
+        if (m_dirValue) {
+            m_dirValue->setString(kDirNames[dirSetting()]);
+            fitLabel(m_dirValue, 0.34f, 56.f);
         }
     }
 
@@ -2566,7 +2759,7 @@ protected:
             const float y = kRowY0 - kRowDY * static_cast<float>(k);
             m_listNodes.push_back(this->addButton(name.c_str(), 160, active, kRightCX, y,
                                                   menu_selector(RhythmPopup::onPick),
-                                                  static_cast<int>(i), 22.f, 0.5f));
+                                                  static_cast<int>(i), 20.f, 0.5f));
         }
         m_pageLabel->setString((std::to_string(m_page + 1) + "/" + std::to_string(pages)).c_str());
         this->refreshActive();
@@ -2587,9 +2780,21 @@ protected:
         this->afterSettingsChanged();
     }
 
-    void onReset(CCObject*) {
-        for (auto const& row : kRows) setRowValue(row, row.def);  // Desfase vuelve a -5 ms
+    // Direccion de las notas: tag 0 = anterior, tag 1 = siguiente (circular entre las 4).
+    void onDir(CCObject* sender) {
+        const int tag = static_cast<CCNode*>(sender)->getTag();
+        const int cur = dirSetting();
+        const int next = (cur + (tag == 1 ? 1 : 3)) % 4;
+        setIntSetting("bar-dir", next);
         this->afterSettingsChanged();
+    }
+
+    void onReset(CCObject*) {
+        for (auto const& row : kRows) setRowValue(row, row.def);  // Desfase vuelve a 0 ms
+        setIntSetting("bar-dir", 0);
+        setMiniBarSetting(true);
+        this->afterSettingsChanged();
+        this->syncToggles();
     }
 
     void onPage(CCObject* sender) {
@@ -2610,6 +2815,7 @@ protected:
     void syncToggles() {
         if (m_expToggle) m_expToggle->toggle(g_experiment);
         if (m_hideToggle) m_hideToggle->toggle(hideBarSetting());
+        if (m_miniToggle) m_miniToggle->toggle(miniBarSetting());
     }
 
     // Modo Experimento. Si la barra todavia no existe se intenta crear ahora; si no se puede,
@@ -2635,6 +2841,14 @@ protected:
     void onHideBar(CCObject*) {
         const bool want = !hideBarSetting();
         setHideBarSetting(want);
+        RhythmBar::refreshNow();
+        this->scheduleToggleSync();
+    }
+
+    // Mini-Barra Superior: marcada = visible; desmarcada = setVisible(false) sobre toda la
+    // mini-barra segmentada (el juicio sigue igual, solo se limpia la interfaz).
+    void onMiniBar(CCObject*) {
+        setMiniBarSetting(!miniBarSetting());
         RhythmBar::refreshNow();
         this->scheduleToggleSync();
     }
@@ -2792,7 +3006,7 @@ void collectBusyRects(CCNode* space, CCNode* root, CCSize const& win, std::vecto
 class $modify(RhythmPlayLayer, PlayLayer) {
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
-        ensureDefaultOffset();  // desfase por defecto -5 ms (una sola vez)
+        ensureDefaultOffset();  // migracion unica del desfase a v1.50
         ensureBar(this, true);  // siempre una barra nueva por nivel
         return true;
     }
@@ -2814,16 +3028,19 @@ class $modify(RhythmPlayLayer, PlayLayer) {
  * Entradas del jugador. pushButton/releaseButton de GJBaseGameLayer solo encolan el clic;
  * el juego lo aplica de verdad en handleButton, dentro del paso de fisica que corresponde,
  * asi que ahi el tiempo (m_levelTime) coincide con el de las macros. PlayLayer hereda este
- * metodo, por eso el hook va sobre GJBaseGameLayer.
+ * metodo, por eso el hook va sobre GJBaseGameLayer. Se llama primero al original (el clic ya
+ * queda aplicado) y luego se lee m_levelTime del MISMO paso: no hay ningun retardo intermedio.
  */
 class $modify(RhythmBaseGameLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
         GJBaseGameLayer::handleButton(down, button, isPlayer1);
 
         if (!isPlayer1 || button != 1) return;  // solo P1 y solo salto
+        auto bar = RhythmBar::instance();
+        if (!bar) return;
         auto pl = PlayLayer::get();
         if (!pl || static_cast<GJBaseGameLayer*>(pl) != static_cast<GJBaseGameLayer*>(this)) return;
-        if (auto bar = RhythmBar::instance()) bar->onInput(down, currentLevelTime(pl));
+        bar->onInput(down, currentLevelTime(pl));
     }
 };
 
