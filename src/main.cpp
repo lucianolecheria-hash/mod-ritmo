@@ -1,10 +1,26 @@
 /*
- * Rhythm Practice Bar  v1.600  (luchx.barra-ritmo-final)
+ * Rhythm Practice Bar  v1.610  (luchx.barra-ritmo-final)
  * Barra estilo juego de ritmo para practicar el timing de clics a partir de una macro
  * de Mega Hack / .gdr2. Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor).
  * Unica excepcion: el check verde del filtro noclip usa GJ_completes_001.png (si el sprite no
  * existe se dibuja un check con CCDrawNode). Sin reaparicion automatica ni StartPos virtual
  * (eso lo maneja el jugador a mano): el mod solo dibuja, juzga y muestra resultados.
+ *
+ * NOVEDADES v1.610 (Chain-Survival Link; reemplaza al "Filtro Noclip Inteligente" de v1.600)
+ *  1) El veredicto de un clic ya NO es inmediato. El cartel y la mini-barra salen al instante,
+ *     pero combo y precision solo se aplican cuando se cierra la "cadena" del clic: los cuadros de
+ *     fisica desde que arranca (primer cuadro entre el pulsar del jugador y el de la macro) hasta el
+ *     INICIO EXACTO del siguiente clic de la macro (el ultimo clic usa kChainTailSec).
+ *  2) Si la hitbox real choco (PlayLayer::destroyPlayer) dentro de esa cadena, el clic se invalida y
+ *     cuenta como un "Fallo!" real de muerte, incluso si habia salido "Excelente!". Un solo Fallo
+ *     por clic (un hold no se castiga dos veces: pulsar + soltar).
+ *  3) Temprano / Tarde sin choque: se muestra el texto con un tilde verde (GJ_completes_001.png),
+ *     SUMAN a la racha del combo (no la reinician) y entran a la precision con su peso normal.
+ *  4) "Fallo con tilde" (Fallo! sin choque en su cadena): el combo se mantiene y la precision no
+ *     cambia; se cuenta aparte en "Salvados" de la pantalla de resultados.
+ *  5) evaluarPrecisionFrame() existe ahora como funcion propia (RhythmBar::evaluarPrecisionFrame).
+ *     Si el cartel original ya desaparecio cuando se cierra la cadena, el tilde o el "Fallo!" salen
+ *     en un cartel secundario al costado (kEchoTag). Combo y estadisticas van un clic atrasados.
  *
  * NOVEDADES v1.600
  *  1) Interfaz del popup "Ritmo": etiquetas y flechas (-, +, <, >) mas chicas y alineadas en una
@@ -26,15 +42,10 @@
  *     instante (se corta la lluvia de notas, los holds en vivo y las estadisticas). Borrar el
  *     texto del cuadro de macro tambien la desactiva, y "Quitar" desactiva la macro que saca de
  *     la biblioteca. Se guarda como valor "macro-active" (no hace falta tocar mod.json).
- *  4) Filtro Noclip Inteligente: un Temprano / Tarde cuya colision letal NO ocurrio en la hitbox
- *     real (no hubo destroyPlayer en una ventana alrededor del clic) se marca como "salvado":
- *     el cartel se muestra igual, con un check verde al lado. Un salvado NO rompe ni suma al
- *     combo y queda FUERA del promedio de precision (ni sube ni baja). Se cuentan aparte
- *     ("Salvados") en la pantalla de resultados. Los juicios se aplican en orden (cola), asi el
- *     combo maximo no se infla mientras se espera la resolucion.
- *     Nota: la deteccion engancha PlayLayer::destroyPlayer con prioridad alta para verlo antes que
- *     un noclip que lo salte. Si tu noclip bloquea la colision antes de llegar ahi, todos los
- *     Temprano / Tarde se veran como salvados.
+ *  4) Filtro Noclip Inteligente: REEMPLAZADO en v1.610 por el Chain-Survival Link (ver arriba).
+ *     Se mantiene el enganche de PlayLayer::destroyPlayer con prioridad alta para verlo antes que
+ *     un noclip que lo salte. Si tu noclip bloquea la colision antes de llegar ahi, ningun clic
+ *     se vera como chocado y todos los Temprano / Tarde / Fallo! saldran con tilde.
  *
  * JUICIO POR FRAMES EXACTOS (usa los fps de la macro; 240 si el archivo no los trae):
  *   - Pulsar: frame del clic del jugador contra frame de la macro (juicio principal).
@@ -44,11 +55,12 @@
  *       0 frames de diferencia  -> "Excelente!"   (cian brillante)
  *       +-1 frame               -> "Perfecto+!"   (verde lima)
  *       +-2 a 3 frames          -> "Perfecto!"    (verde)
- *       mas de 3 frames         -> "Temprano" / "Tarde"  (con check verde si fue salvado)
+ *       mas de 3 frames         -> "Temprano" / "Tarde"  (con tilde verde si sobrevivio la cadena)
  *       sin pulsar / sin soltar -> "Fallo!"       (un solo Fallo por clic)
  *
  * - Combo ACUMULATIVO (RunStats::combo / RunStats::maxCombo): "Excelente!", "Perfecto+!" y
- *   "Perfecto!" suman; solo "Temprano", "Tarde" o "Fallo!" (no salvados) lo reinician a 0.
+ *   "Perfecto!" suman; "Temprano" / "Tarde" CON tilde tambien suman; solo "Temprano", "Tarde" o
+ *   "Fallo!" que chocaron (muerte en la cadena) lo reinician a 0. El "Fallo con tilde" lo deja igual.
  * - Pantalla de resultados estilo osu! (RhythmResultsPopup) con el mapa de calor / grafica de
  *   precision por tramo dibujada con CCDrawNode.
  * - Popup "Ritmo" (boton del menu de pausa) con ajustes en tiempo real: Largo, Grosor,
@@ -56,8 +68,9 @@
  *   Mini-Barra Superior y biblioteca de macros.
  *
  * Equivalencias de nombres (por si se buscan por el nombre del pedido):
- *   evaluarPrecisionFrame      -> classifyFrames() + RhythmBar::judgePress() / judgeRelease(),
- *                                 con el cuadro de RhythmBar::frameNow()
+ *   evaluarPrecisionFrame      -> RhythmBar::evaluarPrecisionFrame() (la llaman judgePress() /
+ *                                 judgeRelease(); clasifica con classifyFrames() y encola el
+ *                                 veredicto hasta que se cierra la cadena, ver resolveJudge())
  *   m_audioOffsetMs            -> ajuste "offset" (kOffsetDef / Config::offset, solo visual)
  *   m_currentCombo, m_maxCombo -> RunStats::combo, RunStats::maxCombo
  *   desplegarPantallaResultadosOsu -> RhythmResultsPopup (lo abre RhythmBar::openResults)
@@ -708,13 +721,15 @@ constexpr int kInputFrameBias = 0;
 // de esto; si no (otro tps, checkpoint raro) se usa el cuadro por tiempo.
 constexpr int kStepTolerance = 2;
 
-// Filtro noclip: ventana (en cuadros) alrededor de un Temprano / Tarde donde una colision letal
-// de la hitbox real cuenta como "habria muerto".
-constexpr int kLethalBeforeFrames = 3;    // cuadros antes del clic / del cuadro ideal
-constexpr double kSurviveAfterSec = 0.10; // segundos despues del clic / del cuadro ideal
-constexpr size_t kLethalCap = 512;        // colisiones letales recordadas
+// Filtro noclip / Chain-Survival Link.
 constexpr int kLethalIgnoreFrames = 3;    // ignora colisiones de los primeros cuadros (anticheat)
 constexpr int32_t kLethalHookPriority = -100000;  // bajo = el hook corre antes que un noclip
+
+// Chain-Survival Link: la cadena de un clic va desde su pulsar hasta el INICIO EXACTO del
+// siguiente clic de la macro.
+constexpr double kChainTailSec = 1.0;  // ultimo clic de la macro (no hay siguiente): cuanto se espera
+constexpr int kChainMinFrames = 2;     // la ventana nunca mide menos que esto
+constexpr int kEchoTag = 7732;         // cartel secundario (tilde / invalidacion tardia)
 
 constexpr int kMicroRange = 8;       // la mini-barra muestra +-8 frames
 constexpr float kMicroH = 10.f;      // alto de la mini-barra
@@ -1274,7 +1289,8 @@ Judge classifyFrames(int d) {
     return d < 0 ? Judge::Early : Judge::Late;
 }
 
-// Acierto limpio: suma al combo y NO lo rompe. Temprano / Tarde / Fallo! lo cortan.
+// Acierto limpio: suma al combo y NO lo rompe. Temprano / Tarde / Fallo! lo cortan
+// (salvo que sobrevivan la cadena: ver RunStats::addSaved / addSavedMiss).
 constexpr bool isCleanJudge(Judge j) {
     return j == Judge::Excellent || j == Judge::PerfectPlus || j == Judge::Perfect;
 }
@@ -1290,27 +1306,28 @@ constexpr size_t kMaxSamples = 20000;
 // Estadisticas de la run actual.
 struct RunStats {
     uint32_t counts[kJudgeCount] = {};
-    uint32_t combo = 0;     // aciertos limpios consecutivos (Excelente! / Perfecto+! / Perfecto!)
+    uint32_t combo = 0;     // aciertos consecutivos (limpios + Temprano / Tarde con tilde)
     uint32_t maxCombo = 0;  // pico mas alto de esa racha
-    uint32_t survivedEarly = 0;  // Temprano salvados (la hitbox real no habria muerto)
-    uint32_t survivedLate = 0;   // Tarde salvados
+    uint32_t savedEarly = 0;  // Temprano con tilde: YA esta dentro de counts[] (cuenta en precision)
+    uint32_t savedLate = 0;   // Tarde con tilde: idem
+    uint32_t savedMiss = 0;   // Fallo con tilde: NO esta en counts[] (no toca la precision)
     std::vector<JudgeSample> samples;
 
     void reset() { *this = RunStats{}; }
 
-    // Juicios que cuentan para la precision (no incluye los salvados).
+    // Juicios que cuentan para la precision.
     uint32_t total() const {
         uint32_t n = 0;
         for (auto c : counts) n += c;
         return n;
     }
 
-    uint32_t survived() const { return survivedEarly + survivedLate; }
+    uint32_t survived() const { return savedEarly + savedLate + savedMiss; }
 
-    // Todo lo que paso en la run, incluidos los salvados.
-    uint32_t shown() const { return total() + survived(); }
+    // Todo lo que paso en la run (el Fallo con tilde no esta en counts[]).
+    uint32_t shown() const { return total() + savedMiss; }
 
-    // Porcentaje de precision 0..100. Los salvados quedan FUERA del promedio: ni suben ni bajan.
+    // Porcentaje de precision 0..100. El Fallo con tilde queda FUERA del promedio.
     double accuracy() const {
         const uint32_t n = total();
         if (n == 0) return 0.0;
@@ -1325,16 +1342,24 @@ struct RunStats {
             ++combo;  // el combo se acumula entre categorias limpias
             maxCombo = std::max(maxCombo, combo);
         } else {
-            combo = 0;  // solo Temprano, Tarde y Fallo! lo cortan por completo
+            combo = 0;  // Temprano, Tarde y Fallo! (con muerte en la cadena) lo cortan por completo
         }
         if (samples.size() < kMaxSamples) samples.push_back({pct, j});
     }
 
-    // Temprano / Tarde que no habria matado: no rompe el combo, no lo suma y no toca la precision.
-    void addSurvived(Judge j) {
-        if (j == Judge::Early) ++survivedEarly;
-        else ++survivedLate;
+    // Temprano / Tarde que sobrevivio hasta el siguiente clic: SUMA a la racha (no la rompe)
+    // y entra a la precision con su peso normal.
+    void addSaved(Judge j, float pct) {
+        ++counts[idx(j)];
+        if (j == Judge::Early) ++savedEarly;
+        else ++savedLate;
+        ++combo;
+        maxCombo = std::max(maxCombo, combo);
+        if (samples.size() < kMaxSamples) samples.push_back({pct, j});
     }
+
+    // Fallo con tilde: el combo queda igual y la precision no se altera.
+    void addSavedMiss() { ++savedMiss; }
 };
 
 struct GradeInfo {
@@ -1667,7 +1692,7 @@ protected:
         // grafica de precision por tramo del nivel
         this->addGraph(s);
 
-        // pie: los salvados (Temprano / Tarde sin muerte real) van aparte y no cuentan en la precision
+        // pie: los salvados (Temprano / Tarde / Fallo con tilde) se cuentan aparte
         std::string line = "Total: " + std::to_string(s.total()) + " juicios";
         if (s.survived() > 0) line += "   Salvados: " + std::to_string(s.survived());
         line += "   Macro: " + macroName;
@@ -1719,6 +1744,7 @@ protected:
         bool hasRel = false; // true = hold largo explicito: el soltar tambien se juzga
         uint8_t press = NotePending;
         uint8_t release = NoteSkipped;
+        bool dead = false;   // la cadena de este clic ya murio (un solo Fallo por clic)
     };
 
     struct TrailEntry {
@@ -1736,16 +1762,17 @@ protected:
         float x, y, w, h;
     };
 
-    // Un juicio esperando su turno para entrar a las estadisticas. Los juicios se aplican SIEMPRE
-    // en orden: un Temprano / Tarde (defer) espera a saber si la hitbox real habria muerto, y los
-    // que vienen detras esperan con el, asi el combo y el combo maximo salen bien.
+    // Un juicio esperando su turno para entrar a las estadisticas (Chain-Survival Link). Los
+    // juicios se aplican SIEMPRE en orden y solo cuando se cierra la cadena de su clic (hasta el
+    // inicio exacto del siguiente clic de la macro), o antes si ya se vio una colision letal.
     struct QueuedJudge {
         Judge j = Judge::Miss;
         float pct = 0.f;
-        bool defer = false;  // Temprano / Tarde
-        int lo = 0;          // ventana de cuadros donde una colision letal cuenta
+        size_t click = kNone;   // clic de la macro al que pertenece
+        int lo = 0;             // cadena: [lo, hi] en cuadros
         int hi = 0;
-        Ref<CCNode> box;               // cartel donde se pondra el check si se salva
+        bool lethal = false;    // ya se vio una colision letal dentro de la cadena
+        Ref<CCNode> box;        // cartel en pantalla (para el tilde / la invalidacion)
         Ref<CCLabelBMFont> label;
     };
 
@@ -1758,7 +1785,7 @@ protected:
     std::vector<Click> m_clicks;
     double m_fps = 240.0;
     int m_outer = 60;           // ventana exterior en cuadros
-    int m_lethalAfter = 24;     // cuadros que se espera una colision letal tras un Temprano / Tarde
+    int m_lethalKeep = 600;     // cuadros de historial de colisiones que se conservan
     size_t m_pCursor = 0;       // primer clic cuyo "pulsar" aun no expiro
     size_t m_rCursor = 0;       // primer clic con algo sin resolver
     size_t m_active = kNone;    // clic de la macro que el jugador esta sosteniendo (acertado)
@@ -1768,7 +1795,7 @@ protected:
     Config m_cfg;
     std::string m_macroKey;
 
-    // filtro noclip
+    // filtro noclip / Chain-Survival Link
     std::deque<QueuedJudge> m_queue;  // juicios pendientes de entrar a m_stats
     std::vector<int> m_lethal;        // cuadros (ascendentes) con colision letal de la hitbox real
 
@@ -1926,15 +1953,22 @@ public:
     }
 
     // Colision letal de la hitbox real (PlayLayer::destroyPlayer), la haya bloqueado un noclip o no.
-    // Se guarda el cuadro: un Temprano / Tarde con una colision dentro de su ventana NO se salva.
+    // Se guarda el cuadro y se marcan como "muertos" los juicios en vuelo cuya cadena lo contiene:
+    // un clic con una colision dentro de su cadena se invalida (Fallo! real).
     void onLethal(PlayLayer* pl) {
         if (!m_cfg.enabled || !m_macroOn || m_finished || !pl) return;
         const int f = this->frameNow(pl);
         if (f < kLethalIgnoreFrames) return;
         if (!m_lethal.empty() && f < m_lethal.back()) m_lethal.clear();  // el tiempo retrocedio
         if (m_lethal.empty() || m_lethal.back() != f) m_lethal.push_back(f);
-        if (m_lethal.size() > kLethalCap) {
-            m_lethal.erase(m_lethal.begin(), m_lethal.begin() + static_cast<std::ptrdiff_t>(kLethalCap / 2));
+
+        // historial acotado por antiguedad
+        const auto old = std::lower_bound(m_lethal.begin(), m_lethal.end(), f - m_lethalKeep);
+        m_lethal.erase(m_lethal.begin(), old);
+
+        // cadenas en vuelo: si el cuadro cae dentro de su tramo, el veredicto ya es muerte
+        for (auto& q : m_queue) {
+            if (f >= q.lo && f <= q.hi) q.lethal = true;
         }
     }
 
@@ -1976,7 +2010,7 @@ public:
         if (!m_cfg.enabled || m_finished || !m_macroOn) return;
         m_finished = true;
         m_active = kNone;
-        this->drainQueue(m_lastFrame, true);  // los Temprano / Tarde pendientes se resuelven ya
+        this->drainQueue(m_lastFrame, true);  // las cadenas pendientes se resuelven ya
         if (m_stats.shown() == 0) return;
 
         this->stopActionByTag(kResultsTag);
@@ -2038,7 +2072,6 @@ private:
         m_macro = std::move(macro);
         m_fps = fps > 0.0 ? fps : 240.0;
         m_outer = std::max(1, static_cast<int>(std::llround(kOuterWin * m_fps)));
-        m_lethalAfter = std::max(1, static_cast<int>(std::llround(kSurviveAfterSec * m_fps)));
 
         m_clicks.clear();
         m_clicks.reserve(m_macro.clicks.size());
@@ -2052,6 +2085,9 @@ private:
             c.release = c.hasRel ? NotePending : NoteSkipped;
             m_clicks.push_back(c);
         }
+        int longest = 0;
+        for (auto const& c : m_clicks) longest = std::max(longest, c.eF - c.sF);
+        m_lethalKeep = longest + 2 * m_outer + 8;  // cubre holds largos + ventana exterior
         m_macroOn = !m_clicks.empty();
         m_pCursor = 0;
         m_rCursor = 0;
@@ -2080,6 +2116,7 @@ private:
         m_trail.clear();
         this->stopActionByTag(kResultsTag);
         this->clearJudgmentBox();
+        this->removeChildByTag(kEchoTag, true);
 
         for (auto n : m_pool) n->setVisible(false);
         m_used = 0;
@@ -2446,57 +2483,147 @@ private:
         return it != m_lethal.end() && *it <= hi;
     }
 
-    // Aplica a las estadisticas, EN ORDEN, los juicios que ya se pueden resolver.
-    //  - normal (Excelente! / Perfecto+! / Perfecto! / Fallo!): entra enseguida.
-    //  - Temprano / Tarde: espera hasta pasada su ventana (o a force). Sin colision letal en la
-    //    ventana = salvado: no toca combo ni precision y lleva un check. Con colision = cuenta normal.
+    // ---- Chain-Survival Link ----
+
+    // Cadena de un clic: cuadros de fisica desde que arranca hasta el inicio EXACTO del siguiente clic
+    // de la macro (el ultimo clic usa kChainTailSec). Arranca en el primer cuadro entre el pulsar del
+    // jugador y el de la macro: un "Tarde" choca ANTES de que termine el clic y se perderia.
+    void chainWindow(size_t ci, int& lo, int& hi) const {
+        auto const& c = m_clicks[ci];
+        lo = (c.press == NoteHit) ? std::min(c.pF, c.sF) : c.sF;
+        hi = (ci + 1 < m_clicks.size())
+                 ? m_clicks[ci + 1].sF
+                 : std::max(c.sF, c.eF) + static_cast<int>(std::llround(kChainTailSec * m_fps));
+        hi = std::max(hi, lo + kChainMinFrames);
+    }
+
+    void onEchoDone(CCNode* node) {
+        if (node) node->removeFromParentAndCleanup(true);
+    }
+
+    // Cartel secundario, para cuando el cartel original ya desaparecio al resolverse la cadena.
+    void spawnEcho(Judge j, bool check) {
+        const auto st = styleOf(j);
+        this->removeChildByTag(kEchoTag, true);
+
+        auto holder = CCNode::create();
+        holder->setTag(kEchoTag);
+        const float side = m_dir == BarDir::RightToLeft ? 1.f : -1.f;  // lado opuesto al combo
+        holder->setPosition({m_hudX + side * 72.f, m_textY});
+        holder->setScale(0.f);
+        this->addChild(holder, 10);
+
+        auto label = CCLabelBMFont::create(st.text, "bigFont.fnt");
+        label->setColor(st.color);
+        label->setScale(0.42f);
+        holder->addChild(label);
+        if (check) {
+            auto mark = CCNode::create();
+            mark->addChild(makeCheckMark(14.f));  // GJ_completes_001.png (o el check de CCDrawNode)
+            mark->setPosition({label->getContentSize().width * 0.42f * 0.5f + 12.f, 0.f});
+            holder->addChild(mark);
+        }
+
+        CCFiniteTimeAction* pop = CCEaseBackOut::create(CCScaleTo::create(0.12f, 1.f));
+        CCFiniteTimeAction* rise = CCEaseOut::create(CCMoveBy::create(0.60f, {0.f, 14.f}), 2.f);
+        holder->runAction(CCSequence::create(
+            CCSpawn::create(pop, rise, nullptr), CCDelayTime::create(0.30f), CCScaleTo::create(0.15f, 0.f),
+            CCCallFuncN::create(this, callfuncN_selector(RhythmBar::onEchoDone)), nullptr));
+    }
+
+    bool boxStillShown(QueuedJudge const& q) {
+        return q.box.data() && q.box.data() == m_box && m_box->getParent() && q.label.data();
+    }
+
+    // Tilde verde: junto al cartel original si sigue en pantalla; si no, en un cartel secundario.
+    void showCheck(QueuedJudge& q) {
+        if (this->boxStillShown(q)) this->attachCheck(m_box, q.label.data());
+        else this->spawnEcho(q.j, true);
+    }
+
+    // Clic invalidado por muerte: el cartel pasa a "Fallo!" en rojo.
+    void markDead(QueuedJudge& q) {
+        if (this->boxStillShown(q)) {
+            const auto st = styleOf(Judge::Miss);
+            q.label->setString(st.text);
+            q.label->setColor(st.color);
+        } else {
+            this->spawnEcho(Judge::Miss, false);
+        }
+    }
+
+    // Veredicto definitivo de un juicio cuando su cadena se cerro (o ya se vio la muerte).
+    //   muerte en la cadena                -> Fallo! real (invalida incluso un Excelente!)
+    //   Temprano / Tarde sin muerte        -> tilde, SUMA al combo, cuenta en precision
+    //   Fallo! sin muerte (Fallo con tilde)-> combo y precision intactos, con tilde
+    //   limpio sin muerte                  -> normal
+    void resolveJudge(QueuedJudge& q, bool& pulse) {
+        const uint32_t before = m_stats.combo;
+
+        // un solo veredicto de muerte por clic: lo que llegue despues se descarta
+        if (q.click < m_clicks.size()) {
+            auto& c = m_clicks[q.click];
+            if (c.dead) return;
+            if (q.lethal) c.dead = true;
+        }
+
+        if (q.lethal) {
+            if (q.j != Judge::Miss) this->markDead(q);
+            m_stats.add(Judge::Miss, q.pct);
+        } else if (q.j == Judge::Miss) {
+            m_stats.addSavedMiss();
+            this->showCheck(q);
+        } else if (q.j == Judge::Early || q.j == Judge::Late) {
+            m_stats.addSaved(q.j, q.pct);
+            this->showCheck(q);
+        } else {
+            m_stats.add(q.j, q.pct);
+        }
+        if (m_stats.combo > before) pulse = true;
+    }
+
+    // Aplica EN ORDEN lo que ya se puede resolver. Un juicio vivo espera a que pase su tramo
+    // (nowF > hi); uno con muerte vista no espera. force = resolver todo con lo visto hasta ahora.
     void drainQueue(int nowF, bool force) {
         bool changed = false;
         bool pulse = false;
         while (!m_queue.empty()) {
             auto& q = m_queue.front();
-            if (q.defer && !force && nowF <= q.hi) break;  // aun no se sabe si habria muerto
-
-            const uint32_t before = m_stats.combo;
-            if (q.defer && !this->lethalInWindow(q.lo, q.hi)) {
-                m_stats.addSurvived(q.j);
-                this->attachCheck(q.box.data(), q.label.data());
-            } else {
-                m_stats.add(q.j, q.pct);
-            }
-            if (m_stats.combo > before) pulse = true;
+            if (!q.lethal && !force && nowF <= q.hi) break;
+            this->resolveJudge(q, pulse);
             changed = true;
             m_queue.pop_front();
         }
         if (changed) this->updateComboLabel(pulse);
     }
 
-    void queueMiss(int nowF, float pct) {
+    // Fallo por expiracion. No drena: advanceJudge le liga el cartel y luego drena.
+    void queueMiss(size_t ci, float pct) {
         QueuedJudge q;
         q.j = Judge::Miss;
         q.pct = pct;
+        q.click = ci;
+        this->chainWindow(ci, q.lo, q.hi);
+        q.lethal = this->lethalInWindow(q.lo, q.hi);
         m_queue.push_back(std::move(q));
-        this->drainQueue(nowF, false);
     }
 
-    // Registra un juicio con frames de diferencia: cartel y mini-barra al instante; estadisticas,
-    // combo y salvados a traves de la cola (ver drainQueue). El combo acumula Excelente! /
-    // Perfecto+! / Perfecto! y solo se corta con Temprano / Tarde / Fallo! (regla en RunStats::add).
-    void registerJudge(Judge j, int frames, bool isPress, int curFrame) {
+    // evaluarPrecisionFrame: clasifica por cuadros (d = jugador - macro) y ENCOLA el veredicto.
+    // Cartel y mini-barra salen al instante, pero nada toca combo ni precision hasta que se
+    // cierra la cadena del clic (resolveJudge).
+    void evaluarPrecisionFrame(size_t ci, int d, bool isPress, int curFrame) {
+        const Judge j = classifyFrames(d);
         this->spawnJudgment(j);
-        this->placeMarker(isPress ? m_markP : m_markH, frames, isPress);
+        this->placeMarker(isPress ? m_markP : m_markH, d, isPress);
 
         QueuedJudge q;
         q.j = j;
         q.pct = this->percentNow();
-        if (j == Judge::Early || j == Judge::Late) {
-            const int ideal = curFrame - frames;  // cuadro que habria sido exacto
-            q.defer = true;
-            q.lo = std::min(curFrame, ideal) - kLethalBeforeFrames;
-            q.hi = std::max(curFrame, ideal) + m_lethalAfter;
-            q.box = Ref<CCNode>(m_box);
-            q.label = Ref<CCLabelBMFont>(m_label);
-        }
+        q.click = ci;
+        this->chainWindow(ci, q.lo, q.hi);
+        q.lethal = this->lethalInWindow(q.lo, q.hi);  // un Tarde puede haber chocado antes de pulsar
+        q.box = Ref<CCNode>(m_box);
+        q.label = Ref<CCLabelBMFont>(m_label);
         m_queue.push_back(std::move(q));
         this->drainQueue(curFrame, false);
     }
@@ -2527,7 +2654,7 @@ private:
 
         const int d = f - c.sF;
         log::debug("Rhythm Bar: pulsar cuadro={} macro={} dif={}", f, c.sF, d);
-        this->registerJudge(classifyFrames(d), d, true, f);
+        this->evaluarPrecisionFrame(best, d, true, f);
     }
 
     // Soltar: SOLO para holds largos explicitos de la macro. Compara la DURACION del hold del
@@ -2537,15 +2664,14 @@ private:
             m_active = kNone;
             return;
         }
-        auto& c = m_clicks[m_active];
+        const size_t ci = m_active;
+        auto& c = m_clicks[ci];
         m_active = kNone;
         if (!c.hasRel || c.release != NotePending) return;  // clic comun, o ya expiro (Fallo)
 
-        const int playerHold = f - c.pF;
-        const int macroHold = c.eF - c.sF;
-        const int d = playerHold - macroHold;
+        const int d = (f - c.pF) - (c.eF - c.sF);  // duracion del jugador - duracion de la macro
         c.release = NoteHit;
-        this->registerJudge(classifyFrames(d), d, false, f);
+        this->evaluarPrecisionFrame(ci, d, false, f);
     }
 
     // Tiempo expirado sin accion = Fallo. Devuelve cuantos fallos nuevos hubo.
@@ -2561,7 +2687,7 @@ private:
             if (c.press == NotePending) {
                 c.press = NoteMissed;
                 if (c.hasRel) c.release = NoteSkipped;
-                this->queueMiss(nowF, pct);
+                this->queueMiss(m_pCursor, pct);
                 ++missed;
             }
             ++m_pCursor;
@@ -2574,7 +2700,7 @@ private:
                 const int deadline = c.pF + (c.eF - c.sF) + m_outer;
                 if (nowF > deadline) {
                     c.release = NoteMissed;
-                    this->queueMiss(nowF, pct);
+                    this->queueMiss(i, pct);
                     ++missed;
                 }
             }
@@ -2605,8 +2731,8 @@ private:
             m_queue.clear();
             m_stats.reset();
         } else {
-            // se conservan las estadisticas: los Temprano / Tarde pendientes se resuelven con lo
-            // que se alcanzo a ver (una muerte real deja su colision letal registrada)
+            // se conservan las estadisticas: las cadenas pendientes se resuelven con lo que se
+            // alcanzo a ver (una muerte real deja su colision letal registrada)
             this->drainQueue(m_lastFrame, true);
             m_stats.combo = 0;
         }
@@ -2621,6 +2747,7 @@ private:
         for (size_t i = 0; i < m_clicks.size(); ++i) {
             auto& c = m_clicks[i];
             c.pF = 0;
+            c.dead = false;
             if (i < m_pCursor) {
                 c.press = NoteSkipped;
                 c.release = NoteSkipped;
@@ -2651,11 +2778,17 @@ private:
         m_lastFrame = nowF;
 
         const int missed = this->expire(nowF);
-        this->drainQueue(nowF, false);  // resuelve los Temprano / Tarde cuya ventana ya paso
         if (missed > 0) {
             this->spawnJudgment(Judge::Miss);  // un solo cartel por frame
-            this->updateComboLabel(false);     // el Fallo ya reinicio el combo en m_stats
+            // el cartel nuevo queda ligado a los Fallos de este frame (tilde / invalidacion)
+            for (auto& q : m_queue) {
+                if (q.j == Judge::Miss && !q.box.data()) {
+                    q.box = Ref<CCNode>(m_box);
+                    q.label = Ref<CCLabelBMFont>(m_label);
+                }
+            }
         }
+        this->drainQueue(nowF, false);  // cierra las cadenas cuyo siguiente clic ya empezo
     }
 
     // Resultados (se abre unos segundos despues de levelComplete, encima de la pantalla de fin).
@@ -3389,8 +3522,8 @@ class $modify(RhythmPlayLayer, PlayLayer) {
         if (auto bar = RhythmBar::instance()) bar->onLevelComplete();
     }
 
-    // Filtro noclip: cada colision letal de la hitbox real (se bloquee o no) queda registrada.
-    // El pico anticheat del nivel no cuenta.
+    // Chain-Survival Link: cada colision letal de la hitbox real (se bloquee o no) queda
+    // registrada. El pico anticheat del nivel no cuenta.
     void destroyPlayer(PlayerObject* player, GameObject* object) {
         if (object != m_anticheatSpike) {
             if (auto bar = RhythmBar::instance()) bar->onLethal(this);
