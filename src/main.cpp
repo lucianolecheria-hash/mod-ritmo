@@ -8,9 +8,11 @@
  * - Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor): CERO texturas del juego.
  *
  * JUICIO POR FRAMES EXACTOS (usa los fps de la macro; 240 si el archivo no los trae):
- *   - Pulsar: se compara el frame del clic del jugador con el frame de la macro.
- *   - Soltar: se compara la DURACION del hold del jugador (en frames) con la del hold de la macro.
- *     Esto incluye los clics cortos (ej. un hold de exactamente 10 frames).
+ *   - Pulsar: se compara el frame del clic del jugador con el frame de la macro. ESTE es el juicio
+ *     principal y el unico que existe en los clics comunes / cortos.
+ *   - Soltar: SOLO en holds largos que la macro registra de forma explicita (duracion >=
+ *     tap-threshold, 120 ms por defecto): se compara la DURACION del hold del jugador (en frames)
+ *     con la del hold de la macro. En un clic comun el soltar NO se evalua nunca.
  *
  *       0 frames de diferencia  -> "Excelente!"   (celeste / cian brillante)
  *       +-1 frame               -> "Perfecto+!"   (verde lima)
@@ -20,11 +22,24 @@
  *
  * - Mini-barra de micro-frames sobre el receptor: marca en que frame exacto entro el clic
  *   (blanco, mitad superior) y el error del hold al soltar (dorado, mitad inferior).
- * - Combo de "Excelente!" consecutivos en tiempo real (se reinicia con cualquier otro juicio).
- * - Pantalla de resultados estilo osu! al completar el nivel (PlayLayer::levelComplete).
+ * - Combo ACUMULATIVO de aciertos limpios: "Excelente!", "Perfecto+!" y "Perfecto!" suman y no
+ *   se cortan entre si. Solo "Temprano", "Tarde" o "Fallo!" lo reinician a 0. El combo maximo de
+ *   la run guarda el pico mas alto de esa racha.
+ * - Pantalla de resultados estilo osu! al completar el nivel (PlayLayer::levelComplete), con una
+ *   grafica de precision por tramo del nivel (CCDrawNode): eje X = 0..100% del nivel, eje Y =
+ *   precision de los clics en ese tramo (cian/verde = limpio, rojo = fallos / imprecisiones).
  * - Popup "Ritmo" (boton del menu de pausa) con ajustes en tiempo real:
  *     Largo, Grosor, Altura Barra, Fondo, Velocidad, Desfase (ms), Modo Experimento,
  *     Ocultar Barra y biblioteca de macros.
+ *
+ * Desfase por defecto: -5 ms (kOffsetDef). Si "offset" esta declarado en mod.json con otro valor
+ * por defecto, ensureDefaultOffset() lo pasa a -5 una sola vez (solo si el jugador nunca lo toco).
+ *
+ * Equivalencias de nombres (por si se buscan por el nombre del pedido):
+ *   evaluarPrecisionFrame      -> classifyFrames() + RhythmBar::judgePress() / judgeRelease()
+ *   m_audioOffsetMs            -> ajuste "offset" (kOffsetDef / Config::offset)
+ *   m_currentCombo, m_maxCombo -> RunStats::combo, RunStats::maxCombo
+ *   desplegarPantallaResultadosOsu -> RhythmResultsPopup (lo abre RhythmBar::openResults)
  *
  * Persistencia: cada ajuste se guarda con Mod::get()->setSettingValue cuando esta declarado en
  * mod.json (bar-width, bar-height, bg-opacity, offset, ...). Los que no esten declarados
@@ -63,19 +78,20 @@ namespace rpb {
 
 struct ParserSettings {
     double fps = 0.0;            // 0 = automatico (fps del archivo, o 240 si no lo trae)
-    double tapThreshold = 0.12;  // segundos: soltar antes de esto = clic unico
+    double tapThreshold = 0.12;  // segundos: soltar antes de esto = clic comun (sin juicio al soltar)
 };
 
 struct Hold {
     double start = 0.0;
     double end = 0.0;
+    bool hold = false;  // true = hold largo explicito (duracion >= tapThreshold): se juzga tambien al soltar
 };
 
 struct Macro {
     std::vector<double> presses;   // notas verdes: inicio de cada clic (segundos)
-    std::vector<double> releases;  // notas celestes: soltar de un hold (segundos)
-    std::vector<Hold> holds;       // barras translucidas
-    std::vector<Hold> clicks;      // TODOS los clics (inicio, fin), tambien los cortos: juicio por frames
+    std::vector<double> releases;  // notas celestes: soltar de un hold LARGO (segundos)
+    std::vector<Hold> holds;       // barras translucidas (solo holds largos)
+    std::vector<Hold> clicks;      // TODOS los clics (inicio, fin, si es hold largo): juicio por frames
 };
 
 struct ParseInfo {
@@ -543,10 +559,13 @@ static Macro buildMacro(std::vector<ClickEvent> events, double tapThreshold) {
 
     Macro m;
     auto finish = [&](double t0, double t1) {
+        // Hold largo explicito: solo estos se juzgan tambien al soltar. Un clic comun (corto)
+        // se juzga UNICAMENTE por el frame exacto de impacto (el Press).
+        const bool longHold = (t1 - t0) >= tapThreshold;
         m.presses.push_back(t0);
-        m.clicks.push_back({t0, t1});   // todos los clics, para el juicio por frames
-        if (t1 - t0 >= tapThreshold) {  // hold: barra + nota celeste al soltar
-            m.holds.push_back({t0, t1});
+        m.clicks.push_back({t0, t1, longHold});  // todos los clics, para el juicio por frames
+        if (longHold) {                          // hold largo: barra + nota celeste al soltar
+            m.holds.push_back({t0, t1, true});
             m.releases.push_back(t1);
         }
     };
@@ -662,6 +681,9 @@ constexpr int64_t kSpeedMin = 20;
 constexpr int64_t kSpeedMax = 400;
 constexpr int64_t kSpeedDef = 100;
 
+// Desfase por defecto en ms: calibra de forma nativa el retraso de entrada desde el primer segundo.
+constexpr int64_t kOffsetDef = -5;
+
 const ccColor3B kColWhite{255, 255, 255};
 const ccColor3B kColGreen{60, 255, 100};
 const ccColor3B kColCyan{80, 220, 255};
@@ -687,7 +709,7 @@ struct Config {
     float barThickness = 44.f;  // "bar-height": grosor de la barra en px
     float barY = 0.f;           // "bar-y": altura de la barra sobre el borde inferior, px
     double lookahead = 1.5;     // segundos que tarda una nota en llegar al receptor (ya con la velocidad aplicada)
-    double offset = 0.0;        // "offset": desfase en segundos (se edita en ms)
+    double offset = static_cast<double>(kOffsetDef) / 1000.0;  // "offset": desfase en segundos (se edita en ms)
     float bgOpacity = 0.35f;    // "bg-opacity": 0..1
     rpb::ParserSettings parser;
 };
@@ -728,6 +750,16 @@ void setBoolSetting(char const* key, bool v) {
     } else {
         (void)mod->setSavedValue<bool>(key, v);
     }
+}
+
+// Aplica UNA sola vez el desfase por defecto (-5 ms). Cubre el caso en que "offset" este declarado
+// en mod.json con otro valor por defecto (0): si el jugador nunca lo toco (sigue en 0), pasa a -5.
+// Si no esta declarado, intSetting() ya devuelve kOffsetDef y no se toca nada.
+void ensureDefaultOffset() {
+    auto mod = Mod::get();
+    if (mod->getSavedValue<bool>("offset-default-applied", false)) return;
+    (void)mod->setSavedValue<bool>("offset-default-applied", true);
+    if (intSetting("offset", kOffsetDef) == 0) setIntSetting("offset", kOffsetDef);
 }
 
 bool hideBarSetting() {
@@ -773,7 +805,8 @@ Config loadConfig() {
     const double baseLookahead = std::max(0.1, base);
     c.lookahead = std::max(0.05, baseLookahead / speed);
     // Desfase en ms (se edita desde el popup): compensa el delay de audio / pantalla del equipo.
-    c.offset = static_cast<double>(std::clamp<int64_t>(intSetting("offset", 0), -1000, 1000)) / 1000.0;
+    // Por defecto -5 ms (kOffsetDef).
+    c.offset = static_cast<double>(std::clamp<int64_t>(intSetting("offset", kOffsetDef), -1000, 1000)) / 1000.0;
     c.parser.tapThreshold =
         static_cast<double>(std::clamp<int64_t>(intSetting("tap-threshold", 120), 10, 1000)) / 1000.0;
     c.parser.fps = std::max(0.0, doubleSetting("macro-fps", 0.0));
@@ -798,7 +831,7 @@ constexpr SettingRow kRows[] = {
     {"Altura Barra", "bar-y", 0, 260, 5, 0, "px"},
     {"Fondo", "bg-opacity", 0, 100, 5, 60, "%"},
     {"Velocidad", "scroll-speed", kSpeedMin, kSpeedMax, 10, kSpeedDef, "%"},
-    {"Desfase", "offset", -200, 200, 5, 0, "ms"},
+    {"Desfase", "offset", -200, 200, 5, kOffsetDef, "ms"},
 };
 constexpr size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 
@@ -1030,7 +1063,7 @@ LoadResult loadMacro(Config const& cfg) {
         r.error = info.error;
         return r;
     }
-    log::info("Rhythm Bar: {} -> formato {}, {} eventos, {} clics, {} holds, {} fps", shown,
+    log::info("Rhythm Bar: {} -> formato {}, {} eventos, {} clics, {} holds largos, {} fps", shown,
               info.format, info.events, macro.presses.size(), macro.holds.size(), info.fps);
 
     if (macro.presses.empty()) {
@@ -1095,6 +1128,14 @@ double currentLevelTime(PlayLayer* pl) {
     return pl->m_gameState.m_levelTime;
 }
 
+// Porcentaje actual del nivel (0..100): es el eje X de la grafica de la pantalla de resultados.
+float currentLevelPercent(PlayLayer* pl) {
+    if (!pl) return 0.f;
+    const float p = pl->getCurrentPercent();
+    if (!std::isfinite(p)) return 0.f;
+    return std::clamp(p, 0.f, 100.f);
+}
+
 // ------------------------------------------------------------ juicio ----
 
 enum class Judge : uint8_t { Excellent, PerfectPlus, Perfect, Early, Late, Miss };
@@ -1134,11 +1175,25 @@ Judge classifyFrames(int d) {
     return d < 0 ? Judge::Early : Judge::Late;
 }
 
+// Acierto limpio: suma al combo y NO lo rompe. Temprano / Tarde / Fallo! lo cortan.
+constexpr bool isCleanJudge(Judge j) {
+    return j == Judge::Excellent || j == Judge::PerfectPlus || j == Judge::Perfect;
+}
+
+// Un juicio con el porcentaje del nivel donde ocurrio (datos de la grafica de resultados).
+struct JudgeSample {
+    float pct;  // 0..100
+    Judge j;
+};
+
+constexpr size_t kMaxSamples = 20000;
+
 // Estadisticas de la run actual.
 struct RunStats {
     uint32_t counts[kJudgeCount] = {};
-    uint32_t combo = 0;     // "Excelente!" consecutivos
-    uint32_t maxCombo = 0;
+    uint32_t combo = 0;     // aciertos limpios consecutivos (Excelente! / Perfecto+! / Perfecto!)
+    uint32_t maxCombo = 0;  // pico mas alto de esa racha
+    std::vector<JudgeSample> samples;
 
     void reset() { *this = RunStats{}; }
 
@@ -1157,14 +1212,15 @@ struct RunStats {
         return sum / static_cast<double>(n);
     }
 
-    void add(Judge j) {
+    void add(Judge j, float pct) {
         ++counts[idx(j)];
-        if (j == Judge::Excellent) {
-            ++combo;
+        if (isCleanJudge(j)) {
+            ++combo;  // el combo se acumula entre categorias limpias
             maxCombo = std::max(maxCombo, combo);
         } else {
-            combo = 0;  // Perfecto+, Perfecto, Temprano, Tarde y Fallo rompen el combo
+            combo = 0;  // solo Temprano, Tarde y Fallo! lo cortan por completo
         }
+        if (samples.size() < kMaxSamples) samples.push_back({pct, j});
     }
 };
 
@@ -1245,61 +1301,232 @@ protected:
     }
 };
 
+// ------------------------------------------- grafica de precision por tramo ----
+// El nivel (0..100%) se divide en kGraphBins tramos. La precision de cada tramo es el promedio
+// ponderado (kJudgeWeight) de los juicios que ocurrieron dentro de ese tramo.
+
+constexpr size_t kGraphBins = 50;
+
+struct GraphBin {
+    uint32_t n = 0;       // juicios en este tramo
+    uint32_t misses = 0;  // cuantos fueron Fallo!
+    double sum = 0.0;     // suma de pesos
+
+    double acc() const { return n ? sum / static_cast<double>(n) : 0.0; }
+};
+
+struct GraphData {
+    GraphBin bins[kGraphBins];
+};
+
+GraphData buildGraph(RunStats const& s) {
+    GraphData g;
+    for (auto const& sm : s.samples) {
+        const float p = std::clamp(sm.pct, 0.f, 100.f);
+        size_t b = static_cast<size_t>(p / 100.f * static_cast<float>(kGraphBins));
+        if (b >= kGraphBins) b = kGraphBins - 1;
+        auto& bin = g.bins[b];
+        ++bin.n;
+        bin.sum += kJudgeWeight[idx(sm.j)];
+        if (sm.j == Judge::Miss) ++bin.misses;
+    }
+    return g;
+}
+
+ccColor3B lerpColor(ccColor3B a, ccColor3B b, float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    return ccColor3B{static_cast<GLubyte>(static_cast<float>(a.r) + (static_cast<float>(b.r) - a.r) * t),
+                     static_cast<GLubyte>(static_cast<float>(a.g) + (static_cast<float>(b.g) - a.g) * t),
+                     static_cast<GLubyte>(static_cast<float>(a.b) + (static_cast<float>(b.b) - a.b) * t)};
+}
+
+// Color segun la precision: 0 rojo -> 55 naranja -> 90 verde -> 100 cian.
+ccColor3B heatColor(double acc) {
+    const float a = static_cast<float>(std::clamp(acc, 0.0, 100.0));
+    if (a >= 90.f) return lerpColor(kColGreen, kColBrightCyan, (a - 90.f) / 10.f);
+    if (a >= 55.f) return lerpColor(kColOrange, kColGreen, (a - 55.f) / 35.f);
+    return lerpColor(kColRed, kColOrange, a / 55.f);
+}
+
+// ccColor4F con alpha premultiplicado (CCDrawNode mezcla con GL_ONE, GL_ONE_MINUS_SRC_ALPHA).
+ccColor4F drawColor(ccColor3B c, float a) {
+    return ccc4f(static_cast<float>(c.r) / 255.f * a, static_cast<float>(c.g) / 255.f * a,
+                 static_cast<float>(c.b) / 255.f * a, a);
+}
+
 // ------------------------------------------- pantalla de resultados (osu!) ----
+// Popup 440 x 300 (cabe tambien en pantallas 4:3). Posiciones (dx, dy) desde el centro:
+//   cabecera:  nota + precision total (izquierda), combo maximo (derecha)
+//   fila:      conteo exacto de cada juicio (6 columnas)
+//   grafica:   precision por tramo del nivel + tira de calor
+//   pie:       total / macro + boton OK
 
 class RhythmResultsPopup : public RhythmPopupBase {
 protected:
-    static constexpr float kW = 340.f;
-    static constexpr float kH = 292.f;
+    static constexpr float kW = 440.f;
+    static constexpr float kH = 300.f;
 
-    void addRow(char const* name, ccColor3B color, std::string const& value, float dy,
-                float scale = 0.42f) {
-        this->addLabel(name, -130.f, dy, scale, CCPoint{0.f, 0.5f}, color);
-        auto v = this->addLabel(value, 130.f, dy, scale, CCPoint{1.f, 0.5f}, kColWhite);
-        fitLabel(v, scale, 70.f);
+    void addStat(Judge j, uint32_t count, float cx) {
+        const auto st = styleOf(j);
+        auto name = this->addLabel(st.text, cx, 60.f, 0.3f, CCPoint{0.5f, 0.5f}, st.color);
+        fitLabel(name, 0.3f, 66.f);
+        auto value = this->addLabel(std::to_string(count), cx, 46.f, 0.5f, CCPoint{0.5f, 0.5f}, kColWhite);
+        fitLabel(value, 0.5f, 60.f);
+    }
+
+    // Grafica de linea horizontal con CCDrawNode:
+    //   X = porcentaje del nivel (0..100), Y = precision de los clics en ese tramo (0..100).
+    //   Tramo limpio (puros Excelente!) -> linea arriba en cian/verde.
+    //   Fallo! o imprecisiones -> la curva se desploma y vira a naranja / rojo.
+    void addGraph(RunStats const& s) {
+        constexpr float panelL = -204.f, panelR = 204.f, panelT = 30.f, panelB = -72.f;
+        constexpr float plotL = -178.f, plotR = 190.f, plotT = 14.f, plotB = -46.f;
+        constexpr float plotW = plotR - plotL;
+        constexpr float plotH = plotT - plotB;
+        constexpr float stripT = -52.f, stripB = -58.f;  // tira de calor bajo la grafica
+
+        auto panel = makeSolid(ccColor4B{0, 0, 0, 110}, panelR - panelL, panelT - panelB);
+        panel->setPosition(this->at(m_mainLayer, panelL, panelB));
+        m_mainLayer->addChild(panel, 2);
+
+        // todos los puntos del CCDrawNode se expresan en el espacio de m_mainLayer
+        const CCPoint o = this->at(m_mainLayer, 0.f, 0.f);
+        auto P = [o](float dx, float dy) { return ccp(o.x + dx, o.y + dy); };
+
+        auto draw = CCDrawNode::create();
+        m_mainLayer->addChild(draw, 4);
+
+        // cuadricula: Y en 0 / 50 / 100, X cada 25% del nivel
+        for (float f : {0.f, 0.5f, 1.f}) {
+            const float y = plotB + plotH * f;
+            draw->drawSegment(P(plotL, y), P(plotR, y), 0.5f, drawColor(kColWhite, 0.18f));
+        }
+        for (int k = 0; k <= 4; ++k) {
+            const float x = plotL + plotW * static_cast<float>(k) / 4.f;
+            draw->drawSegment(P(x, plotB), P(x, plotT), 0.4f, drawColor(kColWhite, 0.10f));
+        }
+
+        const GraphData g = buildGraph(s);
+        const float cell = plotW / static_cast<float>(kGraphBins);
+        auto binX = [&](size_t i) { return plotL + cell * (static_cast<float>(i) + 0.5f); };
+        auto binY = [&](double acc) { return plotB + plotH * static_cast<float>(acc / 100.0); };
+
+        // tira de calor: un bloque de color por tramo (gris tenue = sin clics en ese tramo)
+        for (size_t i = 0; i < kGraphBins; ++i) {
+            const float x0 = plotL + cell * static_cast<float>(i);
+            const float x1 = x0 + cell;
+            CCPoint v[4] = {P(x0, stripB), P(x1, stripB), P(x1, stripT), P(x0, stripT)};
+            auto const& b = g.bins[i];
+            const ccColor4F col = b.n ? drawColor(heatColor(b.acc()), 0.9f) : drawColor(kColGray, 0.15f);
+            draw->drawPolygon(v, 4, col, 0.f, ccc4f(0.f, 0.f, 0.f, 0.f));
+        }
+
+        // marcas rojas abajo donde hubo al menos un Fallo!
+        for (size_t i = 0; i < kGraphBins; ++i) {
+            if (g.bins[i].misses == 0) continue;
+            draw->drawSegment(P(binX(i), plotB), P(binX(i), plotB + 7.f), 0.9f, drawColor(kColRed, 0.9f));
+        }
+
+        // la linea: segmentos entre tramos con datos, con degradado de color segun la precision.
+        // Si hay tramos vacios entre dos puntos (sin clics) el segmento se dibuja mas fino y tenue.
+        size_t prev = kGraphBins;
+        constexpr int kSteps = 6;
+        for (size_t i = 0; i < kGraphBins; ++i) {
+            auto const& b = g.bins[i];
+            if (b.n == 0) continue;
+            if (prev < kGraphBins) {
+                auto const& a = g.bins[prev];
+                const bool gap = prev + 1 != i;
+                const float x0 = binX(prev), y0 = binY(a.acc());
+                const float x1 = binX(i), y1 = binY(b.acc());
+                for (int k = 0; k < kSteps; ++k) {
+                    const float t0 = static_cast<float>(k) / static_cast<float>(kSteps);
+                    const float t1 = static_cast<float>(k + 1) / static_cast<float>(kSteps);
+                    const double v = a.acc() + (b.acc() - a.acc()) * static_cast<double>((t0 + t1) * 0.5f);
+                    draw->drawSegment(P(x0 + (x1 - x0) * t0, y0 + (y1 - y0) * t0),
+                                      P(x0 + (x1 - x0) * t1, y0 + (y1 - y0) * t1),
+                                      gap ? 0.7f : 1.3f, drawColor(heatColor(v), gap ? 0.45f : 1.f));
+                }
+            }
+            prev = i;
+        }
+        for (size_t i = 0; i < kGraphBins; ++i) {
+            auto const& b = g.bins[i];
+            if (b.n == 0) continue;
+            draw->drawDot(P(binX(i), binY(b.acc())), 1.8f, drawColor(heatColor(b.acc()), 1.f));
+        }
+
+        // textos: titulo, peor tramo y ejes
+        const CCPoint center{0.5f, 0.5f};
+        fitLabel(this->addLabel("Precision por tramo del nivel", panelL + 6.f, 24.f, 0.26f,
+                                CCPoint{0.f, 0.5f}, kColGold),
+                 0.26f, 200.f);
+
+        size_t worst = kGraphBins;
+        double worstAcc = 101.0;
+        for (size_t i = 0; i < kGraphBins; ++i) {
+            if (g.bins[i].n > 0 && g.bins[i].acc() < worstAcc) {
+                worst = i;
+                worstAcc = g.bins[i].acc();
+            }
+        }
+        if (worst < kGraphBins && worstAcc < 99.95) {
+            char wb[48];
+            std::snprintf(wb, sizeof(wb), "Peor tramo: %d-%d%%",
+                          static_cast<int>(worst * 100 / kGraphBins),
+                          static_cast<int>((worst + 1) * 100 / kGraphBins));
+            fitLabel(this->addLabel(wb, panelR - 6.f, 24.f, 0.26f, CCPoint{1.f, 0.5f}, heatColor(worstAcc)),
+                     0.26f, 150.f);
+        }
+
+        const CCPoint right{1.f, 0.5f};
+        this->addLabel("100", plotL - 3.f, plotT, 0.22f, right, kColGray);
+        this->addLabel("50", plotL - 3.f, plotB + plotH * 0.5f, 0.22f, right, kColGray);
+        this->addLabel("0", plotL - 3.f, plotB, 0.22f, right, kColGray);
+
+        static char const* const kXLabels[] = {"0%", "25%", "50%", "75%", "100%"};
+        for (int k = 0; k <= 4; ++k) {
+            this->addLabel(kXLabels[k], plotL + plotW * static_cast<float>(k) / 4.f, -66.f, 0.22f, center,
+                           kColGray);
+        }
     }
 
     bool init(RunStats const& s, std::string const& macroName) {
         if (!Popup::init(kW, kH)) return false;
         this->setTitle("Resultados");
 
-        // precision total + nota (SS / S / A / B / C / D)
+        const CCPoint center{0.5f, 0.5f};
+
+        // cabecera: nota (SS / S / A / B / C / D) + precision total
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.1f%%", s.accuracy());
         const auto grade = gradeOf(s);
-        auto gl = this->addLabel(grade.text, -112.f, 88.f, 1.5f, CCPoint{0.5f, 0.5f}, grade.color);
-        fitLabel(gl, 1.5f, 70.f);
-        auto acc = this->addLabel(buf, 28.f, 88.f, 1.0f, CCPoint{0.5f, 0.5f}, kColWhite);
-        fitLabel(acc, 1.0f, 190.f);
-        this->addLabel("Precision total", 28.f, 62.f, 0.32f, CCPoint{0.5f, 0.5f}, kColGold);
+        auto gl = this->addLabel(grade.text, -172.f, 92.f, 1.3f, center, grade.color);
+        fitLabel(gl, 1.3f, 64.f);
+        auto acc = this->addLabel(buf, -64.f, 98.f, 0.95f, center, kColWhite);
+        fitLabel(acc, 0.95f, 150.f);
+        this->addLabel("Precision total", -64.f, 76.f, 0.3f, center, kColGold);
+
+        // combo maximo de aciertos limpios (Excelente! / Perfecto+! / Perfecto!)
+        this->addLabel("Combo Max", 150.f, 102.f, 0.3f, center, kColGold);
+        auto cm = this->addLabel(std::to_string(s.maxCombo), 150.f, 84.f, 0.8f, center, kColBrightCyan);
+        fitLabel(cm, 0.8f, 90.f);
 
         // conteo exacto de cada juicio
-        const float y0 = 38.f;
-        const float dy = 21.f;
-        this->addRow(styleOf(Judge::Excellent).text, styleOf(Judge::Excellent).color,
-                     std::to_string(s.counts[idx(Judge::Excellent)]), y0);
-        this->addRow(styleOf(Judge::PerfectPlus).text, styleOf(Judge::PerfectPlus).color,
-                     std::to_string(s.counts[idx(Judge::PerfectPlus)]), y0 - dy);
-        this->addRow(styleOf(Judge::Perfect).text, styleOf(Judge::Perfect).color,
-                     std::to_string(s.counts[idx(Judge::Perfect)]), y0 - 2.f * dy);
-        this->addRow("Temprano/Tarde", kColOrange,
-                     std::to_string(s.counts[idx(Judge::Early)]) + " / " +
-                         std::to_string(s.counts[idx(Judge::Late)]),
-                     y0 - 3.f * dy);
-        this->addRow(styleOf(Judge::Miss).text, styleOf(Judge::Miss).color,
-                     std::to_string(s.counts[idx(Judge::Miss)]), y0 - 4.f * dy);
+        const Judge order[] = {Judge::Excellent, Judge::PerfectPlus, Judge::Perfect,
+                               Judge::Early,     Judge::Late,        Judge::Miss};
+        for (size_t k = 0; k < kJudgeCount; ++k) {
+            this->addStat(order[k], s.counts[idx(order[k])], -175.f + 70.f * static_cast<float>(k));
+        }
 
-        // separador + combo maximo de "Excelente!"
-        auto line = makeSolid(ccColor4B{255, 255, 255, 60}, 260.f, 2.f);
-        line->setPosition(this->at(m_mainLayer, -130.f, -58.f));
-        m_mainLayer->addChild(line, 3);
-        this->addRow("Combo Max Excelente!", kColBrightCyan, std::to_string(s.maxCombo), -72.f);
+        // grafica de precision por tramo del nivel
+        this->addGraph(s);
 
         auto info = this->addLabel("Total: " + std::to_string(s.total()) + " juicios   Macro: " + macroName,
-                                   0.f, -94.f, 0.28f, CCPoint{0.5f, 0.5f}, kColGray);
-        fitLabel(info, 0.28f, 290.f);
+                                   0.f, -88.f, 0.28f, center, kColGray);
+        fitLabel(info, 0.28f, 390.f);
 
-        this->addButton("OK", 80, true, 0.f, -120.f, menu_selector(RhythmResultsPopup::onOk), 0, 28.f, 0.7f);
+        this->addButton("OK", 80, true, 0.f, -116.f, menu_selector(RhythmResultsPopup::onOk), 0, 28.f, 0.7f);
         return true;
     }
 
@@ -1326,14 +1553,15 @@ class RhythmBar : public CCNode {
 protected:
     static constexpr size_t kNone = static_cast<size_t>(-1);
 
-    // Un clic de la macro: pulsar (start) y soltar (end). Se juzgan por separado:
-    //   pulsar -> frame del clic contra frame de la macro
+    // Un clic de la macro: pulsar (start) y, SOLO si es un hold largo explicito, soltar (end).
+    //   pulsar -> frame del clic contra frame de la macro (siempre)
     //   soltar -> duracion del hold del jugador (frames) contra duracion del hold de la macro
+    //             (solo holds largos; en un clic comun el soltar no se juzga)
     struct Click {
         double start = 0.0;
         double end = 0.0;
         double playerPress = 0.0;  // momento en que el jugador pulso (si acerto)
-        bool hasRel = false;       // false = la macro termina con el boton apretado
+        bool hasRel = false;       // true = hold largo explicito: el soltar tambien se juzga
         uint8_t press = NotePending;
         uint8_t release = NoteSkipped;
     };
@@ -1385,7 +1613,7 @@ protected:
 
     CCNode* m_layer = nullptr;         // contenedor de notas / holds / huella
     CCLabelBMFont* m_label = nullptr;  // cartel de juicio
-    CCLabelBMFont* m_combo = nullptr;  // contador de combo de "Excelente!"
+    CCLabelBMFont* m_combo = nullptr;  // contador de combo de aciertos limpios
     std::vector<CCLayerColor*> m_pool;
     size_t m_used = 0;
 
@@ -1570,6 +1798,11 @@ private:
         return pl ? currentLevelTime(pl) - m_cfg.offset : m_lastNow;
     }
 
+    // Porcentaje del nivel en este momento (eje X de la grafica de resultados).
+    float percentNow() const {
+        return currentLevelPercent(PlayLayer::get());
+    }
+
     int toFrames(double seconds) const {
         return static_cast<int>(std::llround(seconds * m_fps));
     }
@@ -1584,7 +1817,7 @@ private:
             Click c;
             c.start = h.start;
             c.end = h.end;
-            c.hasRel = h.end > h.start;
+            c.hasRel = h.hold && h.end > h.start;  // solo holds largos explicitos se juzgan al soltar
             c.release = c.hasRel ? NotePending : NoteSkipped;
             m_clicks.push_back(c);
         }
@@ -1691,7 +1924,7 @@ private:
         m_line = makeSolid(ccColor4B{255, 255, 255, 255}, 1.f, 1.f);
         this->addChild(m_line, 6);
 
-        // contador de combo de "Excelente!"
+        // contador de combo de aciertos limpios
         m_combo = CCLabelBMFont::create("Combo x0", "bigFont.fnt");
         m_combo->setAnchorPoint({0.f, 0.5f});
         m_combo->setColor(kColBrightCyan);
@@ -1851,15 +2084,18 @@ private:
     }
 
     // Registra un juicio con frames de diferencia: estadisticas, cartel, combo y mini-barra.
+    // El combo acumula Excelente! / Perfecto+! / Perfecto! y solo se corta con Temprano / Tarde / Fallo!
+    // (esa regla vive en RunStats::add).
     void registerJudge(Judge j, int frames, bool isPress) {
         const uint32_t before = m_stats.combo;
-        m_stats.add(j);
+        m_stats.add(j, this->percentNow());
         this->spawnJudgment(j);
         this->updateComboLabel(m_stats.combo > before);
         this->placeMarker(isPress ? m_markP : m_markH, frames, isPress);
     }
 
     // Pulsar: busca el clic pendiente mas cercano dentro de la ventana exterior y compara FRAMES.
+    // Este es el juicio principal: el frame exacto de impacto de bajada (el Press).
     void judgePress(double t) {
         m_active = kNone;
         auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), t - kOuterWin,
@@ -1886,7 +2122,8 @@ private:
         this->registerJudge(classifyFrames(d), d, true);
     }
 
-    // Soltar: compara la DURACION del hold del jugador (frames) con la del hold de la macro.
+    // Soltar: SOLO para holds largos explicitos de la macro. Compara la DURACION del hold del
+    // jugador (frames) con la del hold de la macro. En un clic comun no se evalua nada al soltar.
     void judgeRelease(double t) {
         if (m_active == kNone || m_active >= m_clicks.size()) {
             m_active = kNone;
@@ -1894,7 +2131,7 @@ private:
         }
         auto& c = m_clicks[m_active];
         m_active = kNone;
-        if (!c.hasRel || c.release != NotePending) return;  // ya expiro (Fallo) o no hay soltar
+        if (!c.hasRel || c.release != NotePending) return;  // clic comun, o ya expiro (Fallo)
 
         const int playerHold = this->toFrames(t - c.playerPress);
         const int macroHold = this->toFrames(c.end - c.start);
@@ -1905,16 +2142,18 @@ private:
 
     // Tiempo expirado sin accion = Fallo. Devuelve cuantos fallos nuevos hubo.
     //  - pulsar: el clic no se pulso dentro de la ventana; su "soltar" ya no cuenta (un Fallo por clic)
-    //  - soltar: el jugador pulso pero no solto a tiempo (pulsacion + duracion del hold + ventana)
+    //  - soltar: solo holds largos: el jugador pulso pero no solto a tiempo
+    //            (pulsacion + duracion del hold + ventana)
     int expire(double now) {
         int missed = 0;
+        const float pct = this->percentNow();
 
         while (m_pCursor < m_clicks.size() && m_clicks[m_pCursor].start + kOuterWin < now) {
             auto& c = m_clicks[m_pCursor];
             if (c.press == NotePending) {
                 c.press = NoteMissed;
                 if (c.hasRel) c.release = NoteSkipped;
-                m_stats.add(Judge::Miss);
+                m_stats.add(Judge::Miss, pct);
                 ++missed;
             }
             ++m_pCursor;
@@ -1927,7 +2166,7 @@ private:
                 const double deadline = c.playerPress + (c.end - c.start) + kOuterWin;
                 if (now > deadline) {
                     c.release = NoteMissed;
-                    m_stats.add(Judge::Miss);
+                    m_stats.add(Judge::Miss, pct);
                     ++missed;
                 }
             }
@@ -2065,7 +2304,7 @@ private:
         slot(c, a, left, 4.f, width, m_h - 8.f);
     }
 
-    // Verde: pulsar (todos los clics). Celeste: soltar (todos los clics con hold, tambien los cortos).
+    // Verde: pulsar (todos los clics). Celeste: soltar (SOLO los holds largos de la macro).
     void drawNotes(double now) {
         const double from = now - this->tailSeconds();
         const double to = now + m_cfg.lookahead;
@@ -2349,7 +2588,7 @@ protected:
     }
 
     void onReset(CCObject*) {
-        for (auto const& row : kRows) setRowValue(row, row.def);
+        for (auto const& row : kRows) setRowValue(row, row.def);  // Desfase vuelve a -5 ms
         this->afterSettingsChanged();
     }
 
@@ -2553,6 +2792,7 @@ void collectBusyRects(CCNode* space, CCNode* root, CCSize const& win, std::vecto
 class $modify(RhythmPlayLayer, PlayLayer) {
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
+        ensureDefaultOffset();  // desfase por defecto -5 ms (una sola vez)
         ensureBar(this, true);  // siempre una barra nueva por nivel
         return true;
     }
