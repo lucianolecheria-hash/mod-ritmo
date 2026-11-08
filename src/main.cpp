@@ -669,6 +669,10 @@ const ccColor3B kColRed{255, 70, 70};
 // Modo Experimento: solo vive en esta sesion del juego (se apaga al reiniciar GD).
 bool g_experiment = false;
 
+// Ultimo estado de la creacion de la barra ("ok" o el motivo por el que no existe).
+// Se muestra en el popup y en los avisos, asi se ve en pantalla que pasa sin abrir logs.
+std::string g_barStatus = "sin iniciar";
+
 struct Config {
     bool enabled = true;
     std::string macroFile = "macro.txt";
@@ -680,25 +684,73 @@ struct Config {
     rpb::ParserSettings parser;
 };
 
-Config loadConfig() {
+// Lectura tolerante de ajustes. getSettingValue<T>() de Geode devuelve en silencio 0 / false / ""
+// cuando el ajuste NO esta declarado en mod.json (o tiene otro tipo): un "enabled" ausente
+// apagaba la barra entera sin avisar, y por eso ni se creaba ni respondia el Modo Experimento.
+// Aqui, si el ajuste no existe, se usa un valor por defecto (o el valor guardado del mod).
+int64_t intSetting(char const* key, int64_t def) {
     auto mod = Mod::get();
+    if (mod->hasSetting(key)) return mod->getSettingValue<int64_t>(key);
+    return mod->getSavedValue<int64_t>(key, def);
+}
+
+void setIntSetting(char const* key, int64_t v) {
+    auto mod = Mod::get();
+    if (mod->hasSetting(key)) {
+        (void)mod->setSettingValue<int64_t>(key, v);
+    } else {
+        (void)mod->setSavedValue<int64_t>(key, v);
+    }
+}
+
+double doubleSetting(char const* key, double def) {
+    auto mod = Mod::get();
+    return mod->hasSetting(key) ? mod->getSettingValue<double>(key) : def;
+}
+
+bool boolSetting(char const* key, bool def) {
+    auto mod = Mod::get();
+    return mod->hasSetting(key) ? mod->getSettingValue<bool>(key) : def;
+}
+
+std::string macroFileSetting() {
+    auto mod = Mod::get();
+    std::string v = mod->hasSetting("macro-file")
+                        ? mod->getSettingValue<std::string>("macro-file")
+                        : mod->getSavedValue<std::string>("macro-file", std::string("macro.txt"));
+    return v.empty() ? std::string("macro.txt") : v;
+}
+
+void setMacroFile(std::string const& v) {
+    auto mod = Mod::get();
+    if (mod->hasSetting("macro-file")) {
+        (void)mod->setSettingValue<std::string>("macro-file", v);
+    } else {
+        (void)mod->setSavedValue<std::string>("macro-file", v);
+    }
+}
+
+Config loadConfig() {
     Config c;
-    c.enabled = mod->getSettingValue<bool>("enabled");
-    c.macroFile = mod->getSettingValue<std::string>("macro-file");
-    c.barWidthPct = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bar-width"), 10, 100));
-    c.barThickness = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bar-height"), 16, 200));
-    c.bgOpacity = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bg-opacity"), 0, 100)) / 100.f;
+    c.enabled = boolSetting("enabled", true);
+    c.macroFile = macroFileSetting();
+    c.barWidthPct = static_cast<float>(std::clamp<int64_t>(intSetting("bar-width", 60), 10, 100));
+    c.barThickness = static_cast<float>(std::clamp<int64_t>(intSetting("bar-height", 44), 16, 200));
+    c.bgOpacity = static_cast<float>(std::clamp<int64_t>(intSetting("bg-opacity", 35), 0, 100)) / 100.f;
     // Velocidad: mas % = la nota recorre la barra en menos tiempo = notas mas separadas en pantalla.
     // Esto equivale a multiplicar los pixeles por segundo de las notas por la velocidad, y mantiene
     // la linea receptora alineada con el momento real del clic.
     const double speed = static_cast<double>(std::clamp<int64_t>(
-                             mod->getSavedValue<int64_t>("scroll-speed", kSpeedDef), kSpeedMin, kSpeedMax)) /
+                             intSetting("scroll-speed", kSpeedDef), kSpeedMin, kSpeedMax)) /
                          100.0;
-    const double baseLookahead = std::max(0.1, mod->getSettingValue<double>("lookahead"));
+    double base = doubleSetting("lookahead", 1.5);
+    if (base <= 0.0) base = 1.5;
+    const double baseLookahead = std::max(0.1, base);
     c.lookahead = std::max(0.05, baseLookahead / speed);
-    c.offset = mod->getSettingValue<int64_t>("offset") / 1000.0;
-    c.parser.tapThreshold = mod->getSettingValue<int64_t>("tap-threshold") / 1000.0;
-    c.parser.fps = mod->getSettingValue<double>("macro-fps");
+    c.offset = static_cast<double>(intSetting("offset", 0)) / 1000.0;
+    c.parser.tapThreshold =
+        static_cast<double>(std::clamp<int64_t>(intSetting("tap-threshold", 120), 10, 1000)) / 1000.0;
+    c.parser.fps = std::max(0.0, doubleSetting("macro-fps", 0.0));
     return c;
 }
 
@@ -723,19 +775,13 @@ constexpr SettingRow kRows[] = {
 };
 constexpr size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 
+// Usa el ajuste de mod.json si existe y, si no, el valor guardado del mod (ver intSetting).
 int64_t rowValue(SettingRow const& row) {
-    auto mod = Mod::get();
-    if (row.saved) return mod->getSavedValue<int64_t>(row.key, row.def);
-    return mod->getSettingValue<int64_t>(row.key);
+    return intSetting(row.key, row.def);
 }
 
 void setRowValue(SettingRow const& row, int64_t v) {
-    auto mod = Mod::get();
-    if (row.saved) {
-        (void)mod->setSavedValue<int64_t>(row.key, v);
-    } else {
-        (void)mod->setSettingValue<int64_t>(row.key, v);
-    }
+    setIntSetting(row.key, v);
 }
 
 // ------------------------------------------------------------ archivos ----
@@ -1631,6 +1677,49 @@ private:
     }
 };
 
+// ------------------------------------------------- crear la barra (seguro) ----
+// Unico punto donde se crea la barra. Lo llaman PlayLayer::init, PlayLayer::resetLevel (red de
+// seguridad), el menu de pausa y el Modo Experimento. Si no se puede crear, deja el motivo en
+// g_barStatus (se ve en el popup) en vez de fallar en silencio.
+RhythmBar* ensureBar(PlayLayer* pl) {
+    if (auto existing = RhythmBar::instance()) return existing;
+
+    if (!pl || !pl->m_uiLayer) {
+        g_barStatus = "no hay un nivel en juego";
+        return nullptr;
+    }
+
+    const auto cfg = loadConfig();
+    if (!cfg.enabled) {
+        g_barStatus = "ajuste enabled apagado";
+        log::warn("Rhythm Bar: no se crea la barra: el ajuste \"enabled\" esta apagado");
+        return nullptr;
+    }
+
+    // La barra se crea aunque la macro falle: asi se puede elegir otra desde el popup.
+    auto res = loadMacro(cfg);
+    if (!res.ok) {
+        Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
+    }
+
+    auto bar = RhythmBar::create(std::move(res.macro), cfg);
+    if (!bar) {
+        g_barStatus = "fallo al crear la barra";
+        log::error("Rhythm Bar: RhythmBar::create devolvio null");
+        return nullptr;
+    }
+    bar->setID("rhythm-bar"_spr);
+    pl->m_uiLayer->addChild(bar, 1000);
+    g_barStatus = "ok";
+
+    // Diagnostico: si la barra no se ve, mira esta linea en el log de Geode.
+    const auto size = bar->barSize();
+    const auto pos = bar->getPosition();
+    log::info("Rhythm Bar: barra creada y agregada a la UI ({}x{} en {},{}; visible={}; z={})",
+              size.width, size.height, pos.x, pos.y, bar->isVisible(), bar->getZOrder());
+    return bar;
+}
+
 // ------------------------------------------------------------ popup ----
 //
 // Tamano 420 x 300: la pantalla de GD mide 320 de alto, asi que el popup entra completo
@@ -1655,6 +1744,7 @@ protected:
     CCLabelBMFont* m_values[kRowCount] = {};
     CCLabelBMFont* m_pageLabel = nullptr;
     CCLabelBMFont* m_activeLabel = nullptr;
+    CCMenuItemToggler* m_expToggle = nullptr;
     TextInput* m_input = nullptr;
     std::vector<CCNode*> m_listNodes;
     std::vector<std::string> m_library;
@@ -1734,6 +1824,7 @@ protected:
             toggle->setPosition(this->at(m_buttonMenu, -95.f, -61.f));
             toggle->toggle(g_experiment);
             m_buttonMenu->addChild(toggle);
+            m_expToggle = toggle;
             this->addLabel("Modo Experimento (oculta el nivel)", -78.f, -61.f, 0.38f, leftAnchor);
         }
 
@@ -1761,9 +1852,17 @@ protected:
         }
     }
 
+    // Linea inferior del popup. Si la barra no existe, aqui se ve el motivo (en rojo) en vez de
+    // quedarse sin barra y sin saber por que.
     void refreshActive() {
+        if (!RhythmBar::instance()) {
+            m_activeLabel->setString(("Barra no creada: " + asciiOnly(g_barStatus, 38)).c_str());
+            m_activeLabel->setColor(kColRed);
+            return;
+        }
         const auto name = asciiOnly(pathToUtf8(utf8ToPath(loadConfig().macroFile).filename()), 40);
         m_activeLabel->setString(("Activa: " + name).c_str());
+        m_activeLabel->setColor(kColWhite);
     }
 
     void rebuildList() {
@@ -1827,12 +1926,31 @@ protected:
         this->rebuildList();
     }
 
-    // El toggler cambia su propio aspecto; aqui solo se invierte el estado del mod y se aplica ya.
+    // Modo Experimento. Si la barra todavia no existe se intenta crear ahora; si no se puede,
+    // el modo queda apagado y se avisa el motivo (antes no pasaba nada y no se sabia por que).
     void onExperiment(CCObject*) {
-        g_experiment = !g_experiment;
-        RhythmBar::applyExperimentNow();
-        Notification::create(g_experiment ? "Modo Experimento: ACTIVADO" : "Modo Experimento: DESACTIVADO",
-                             g_experiment ? NotificationIcon::Success : NotificationIcon::Info)->show();
+        const bool want = !g_experiment;
+        if (want && !ensureBar(PlayLayer::get())) {
+            g_experiment = false;
+            Notification::create("Modo Experimento: la barra no esta activa (" + asciiOnly(g_barStatus, 40) + ")",
+                                 NotificationIcon::Error)->show();
+        } else {
+            g_experiment = want;
+            RhythmBar::applyExperimentNow();
+            Notification::create(g_experiment ? "Modo Experimento: ACTIVADO" : "Modo Experimento: DESACTIVADO",
+                                 g_experiment ? NotificationIcon::Success : NotificationIcon::Info)->show();
+        }
+        this->refreshActive();
+
+        // El toggler cambia su aspecto solo, y lo hace en un orden que no controlamos respecto a este
+        // callback: un instante despues se vuelve a poner igual al estado real del modo.
+        this->runAction(CCSequence::create(
+            CCDelayTime::create(0.05f),
+            CCCallFunc::create(this, callfunc_selector(RhythmPopup::syncExperimentToggle)), nullptr));
+    }
+
+    void syncExperimentToggle() {
+        if (m_expToggle) m_expToggle->toggle(g_experiment);
     }
 
     // Busca la macro por nombre, la valida, la agrega a la biblioteca y la activa al instante.
@@ -1882,7 +2000,7 @@ protected:
         }
         m_page = index / kPerPage;
 
-        (void)Mod::get()->setSettingValue<std::string>("macro-file", stored);
+        setMacroFile(stored);
         RhythmBar::refreshNow();
         if (m_input) m_input->setString("");
         Notification::create("Rhythm Bar: macro cargada (" +
@@ -1926,7 +2044,7 @@ protected:
             Notification::create("Rhythm Bar: el archivo ya no existe", NotificationIcon::Error)->show();
             return;
         }
-        (void)Mod::get()->setSettingValue<std::string>("macro-file", stored);
+        setMacroFile(stored);
         RhythmBar::refreshNow();
         this->rebuildList();
     }
