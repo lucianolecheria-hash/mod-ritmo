@@ -1,8 +1,8 @@
-# RPB (Rhythm Practice Bar) — v1.00
+# RPB (Rhythm Practice Bar) — v1.60
 > **Mod de análisis físico y práctica rítmica por frames para Geometry Dash 2.2081.**  
 > Desarrollado para **Geode v5** (Win64) usando C++23 y Cocos2d-x.
 
-**RPb** es una herramienta de entrenamiento diseñada para optimizar las sesiones de práctica en niveles de alta dificultad física (como *Acheron* o *Shardscapes*). En lugar de depender únicamente de los intentos a ciegas, el mod lee macros binarias `.gdr2` y mide en segundo plano la precisión exacta de tus dedos en comparación con la macro perfecta, devolviéndote un reporte visual al morir.
+**RPB** es una herramienta de entrenamiento diseñada para optimizar las sesiones de práctica en niveles de alta dificultad física (como *Acheron* o *Slaughterhouse*). En lugar de depender únicamente de los intentos a ciegas, el mod lee macros binarias `.gdr2` y mide en segundo plano la precisión exacta de tus dedos en comparación con la macro perfecta, devolviéndote un reporte visual al morir.
 
 ---
 
@@ -21,12 +21,10 @@
 ## 📥 Instalación
 
 1. Entrá a la pestaña de **Actions** en este repositorio de GitHub.
-2. Descargá el compilado en verde más reciente desde la sección de **Artifacts**.
-3. Extraé el `.zip` y pegá el archivo `.geode` suelto dentro de tu carpeta oficial de Geode:  
-   `AppData\Local\GeometryDash\geode\mods`
-4. Cerrá el juego por completo desde el Administrador de Tareas antes de pegar el archivo para evitar errores de acceso.
+2. Descargá el compilado en verde más reciente desde la sección de **Artifacts** y extraé el `.zip`.
+3. Abrí Geometry Dash, andá a la lista de mods en el menú interno de **Geode** y hacé clic en el botón de la tuerca/ajustes o usá el botón nativo de **"Inyectar mod"** para cargar el archivo `.geode` directamente desde ahí sin abrir carpetas.
 
 ---
 
 ## 👑 Autoría
-Conceptualizado y desarrollado de forma independiente por **LuchX20** (Hecho con ayuda de IA).
+Conceptualizado y desarrollado de forma independiente por **LuchX20** (con ayuda de IA para el desarrollo)
