@@ -7,7 +7,9 @@
  * - Al presionar el salto (P1) el receptor destella en verde; al soltar, en celeste.
  * - Cada clic/soltar se juzga contra la macro: Perfecto / Muy Bien / Bien / Temprano / Tarde,
  *   y una nota que se pasa sin clic cuenta como Fallo.
- * - Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor): CERO texturas del juego.
+ * - Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor): CERO texturas del juego,
+ *   asi que no puede quedar "vacia" ni con tamano 0. Los rectangulos se crean UNA vez y los
+ *   botones +/- del popup les cambian el setContentSize en vivo.
  * - Ajustes "bar-width", "bar-height" y "bg-opacity" del mod.json (o desde el boton
  *   "Ritmo" del menu de pausa, en tiempo real).
  * - "Velocidad" (scroll speed) en el popup "Ritmo", de 20% a 400% y en vivo: mas rapido = las
@@ -19,8 +21,10 @@
  * - Biblioteca de macros guardada en <save dir>/macro-library.txt (una ruta por linea).
  *   Se agregan desde el popup "Ritmo" (campo de texto + boton "Agregar").
  * - "Modo Experimento": oculta TODO el nivel (fondo, cubo, obstaculos) y deja solo la barra.
- *   El nivel sigue corriendo y la musica sigue sonando. Se activa desde el menu de pausa.
- *   (Se reinicia a "apagado" cada vez que abris el juego.)
+ *   El nivel sigue corriendo y la musica sigue sonando. Se activa desde el popup "Ritmo"
+ *   (casilla "Modo Experimento"). Se reinicia a "apagado" cada vez que abris el juego.
+ * - El menu de pausa solo agrega UN boton ("Ritmo"); se coloca en una esquina libre
+ *   comprobando que no se superponga con ningun boton o texto del propio menu de pausa.
  *
  * Formatos que lee parseMacro():
  *   - GDR2 binario (.gdr2, formato de maxnut/GDReplayFormat): se lee directo de los bytes
@@ -645,12 +649,6 @@ constexpr int64_t kSpeedMin = 20;
 constexpr int64_t kSpeedMax = 400;
 constexpr int64_t kSpeedDef = 100;
 
-// Esquina del menu de pausa donde van los botones del mod:
-// 0 = arriba-izquierda (por defecto), 1 = arriba-derecha, 2 = abajo-izquierda, 3 = abajo-derecha.
-#ifndef RPB_PAUSE_CORNER
-#define RPB_PAUSE_CORNER 0
-#endif
-
 // bigFont.fnt de GD no trae el signo de apertura de exclamacion. Ponelo en 1 si tu fuente lo incluye.
 #ifndef RPB_INVERTED_MARKS
 #define RPB_INVERTED_MARKS 0
@@ -691,6 +689,8 @@ Config loadConfig() {
     c.barThickness = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bar-height"), 16, 200));
     c.bgOpacity = static_cast<float>(std::clamp<int64_t>(mod->getSettingValue<int64_t>("bg-opacity"), 0, 100)) / 100.f;
     // Velocidad: mas % = la nota recorre la barra en menos tiempo = notas mas separadas en pantalla.
+    // Esto equivale a multiplicar los pixeles por segundo de las notas por la velocidad, y mantiene
+    // la linea receptora alineada con el momento real del clic.
     const double speed = static_cast<double>(std::clamp<int64_t>(
                              mod->getSavedValue<int64_t>("scroll-speed", kSpeedDef), kSpeedMin, kSpeedMax)) /
                          100.0;
@@ -1054,10 +1054,18 @@ Judge classify(double d) {
 enum NoteState : uint8_t { NotePending, NoteHit, NoteMissed, NoteSkipped };
 
 // Rectangulo solido (sin texturas): (x, y) = esquina inferior izquierda dentro del padre.
+// El tamano minimo es 1x1 para que nunca quede "invisible" por tener tamano 0.
 CCLayerColor* makeSolid(ccColor4B color, float w, float h, float x = 0.f, float y = 0.f) {
-    auto node = CCLayerColor::create(color, w, h);
+    auto node = CCLayerColor::create(color, std::max(w, 1.f), std::max(h, 1.f));
     node->setPosition({x, y});
     return node;
+}
+
+// Cambia tamano y posicion de un rectangulo solido ya creado (esto es lo que usan los +/- del popup).
+void resizeSolid(CCLayerColor* node, float w, float h, float x, float y) {
+    if (!node) return;
+    node->setContentSize({std::max(w, 1.f), std::max(h, 1.f)});
+    node->setPosition({x, y});
 }
 
 // ------------------------------------------------------------ barra ----
@@ -1099,10 +1107,15 @@ protected:
     float m_h = 0.f;
     float m_recX = 0.f;  // posicion X del receptor dentro de la barra
 
-    CCNode* m_layer = nullptr;
-    CCLayerColor* m_flashG = nullptr;
-    CCLayerColor* m_flashB = nullptr;
-    CCLayerColor* m_line = nullptr;
+    // Rectangulos solidos fijos: se crean una sola vez (buildStatic) y se redimensionan (applyLayout).
+    CCLayerColor* m_bg = nullptr;     // fondo de la barra
+    CCLayerColor* m_zone = nullptr;   // zona de acierto alrededor del receptor
+    CCLayerColor* m_edge[4] = {};     // borde: abajo, arriba, izquierda, derecha
+    CCLayerColor* m_flashG = nullptr; // destello verde (presionar)
+    CCLayerColor* m_flashB = nullptr; // destello celeste (soltar)
+    CCLayerColor* m_line = nullptr;   // linea receptora
+
+    CCNode* m_layer = nullptr;        // contenedor de notas / holds / huella
     CCLabelBMFont* m_label = nullptr;
     std::vector<CCLayerColor*> m_pool;
     size_t m_used = 0;
@@ -1123,8 +1136,10 @@ protected:
         if (!CCNode::init()) return false;
         m_cfg = cfg;
         m_macroKey = macroKey(cfg);
+        this->buildStatic();
         this->setMacro(std::move(macro));
-        this->rebuildLayout();
+        this->applyLayout();
+        this->setVisible(cfg.enabled);
         this->scheduleUpdate();
         s_instance = this;
         return true;
@@ -1152,10 +1167,13 @@ public:
         if (s_instance) s_instance->applyConfig(true);
     }
 
-    // Lo llama el boton "Modo Experimento" del menu de pausa.
+    // Lo llama la casilla "Modo Experimento" del popup.
     static void applyExperimentNow() {
         if (s_instance) s_instance->syncLevelVisibility();
     }
+
+    // Para el log de diagnostico.
+    CCSize barSize() const { return {m_w, m_h}; }
 
     // Lee los ajustes y reconstruye lo que haga falta (distancias, macro).
     void applyConfig(bool force) {
@@ -1168,7 +1186,7 @@ public:
 
         m_cfg = c;
         this->setVisible(c.enabled);
-        if (relayout) this->rebuildLayout();
+        if (relayout) this->applyLayout();  // solo setContentSize / setPosition de los rectangulos
 
         if (macroChanged) {
             m_macroKey = key;
@@ -1321,50 +1339,69 @@ private:
 
     // ---- layout ----
 
-    void rebuildLayout() {
-        this->removeAllChildren();
-        m_pool.clear();
-        m_used = 0;
-        m_label = nullptr;
+    // Crea los rectangulos solidos UNA sola vez. El tamano real lo pone applyLayout().
+    void buildStatic() {
+        m_bg = makeSolid(ccColor4B{14, 16, 30, 90}, 1.f, 1.f);
+        this->addChild(m_bg, 0);
 
+        m_zone = makeSolid(ccColor4B{255, 255, 255, 28}, 1.f, 1.f);
+        this->addChild(m_zone, 0);
+
+        m_layer = CCNode::create();
+        this->addChild(m_layer, 1);
+
+        // destellos del receptor: verde (exterior, al presionar) y celeste (interior, al soltar)
+        m_flashG = makeSolid(ccColor4B{60, 255, 100, 0}, 1.f, 1.f);
+        this->addChild(m_flashG, 2);
+
+        m_flashB = makeSolid(ccColor4B{80, 220, 255, 0}, 1.f, 1.f);
+        this->addChild(m_flashB, 3);
+
+        // borde de la barra: 4 franjas finas, siempre visibles aunque el fondo sea transparente
+        for (auto& e : m_edge) {
+            e = makeSolid(ccColor4B{140, 210, 255, 220}, 1.f, 1.f);
+            this->addChild(e, 5);
+        }
+
+        // linea receptora (timing line): sobresale un poco por arriba y por abajo
+        m_line = makeSolid(ccColor4B{255, 255, 255, 255}, 1.f, 1.f);
+        this->addChild(m_line, 6);
+    }
+
+    // Aplica largo / grosor / fondo / velocidad actuales con setContentSize + setPosition.
+    // Se llama al crear la barra y cada vez que un boton +/- del popup cambia un valor.
+    void applyLayout() {
         const auto win = CCDirector::get()->getWinSize();
         const float margin = 10.f;
-        m_w = std::min(win.width * m_cfg.barWidthPct / 100.f, win.width - 2.f * margin);
-        m_h = m_cfg.barThickness;
+        m_w = std::max(40.f, std::min(win.width * m_cfg.barWidthPct / 100.f, win.width - 2.f * margin));
+        m_h = std::max(16.f, m_cfg.barThickness);
         m_recX = m_w * kReceptorFrac;
 
         this->setContentSize({m_w, m_h});
         this->setPosition({(win.width - m_w) / 2.f, margin});  // abajo, centrada
 
         // fondo solido
-        const auto bgAlpha = static_cast<GLubyte>(std::clamp(m_cfg.bgOpacity, 0.f, 1.f) * 255.f);
-        this->addChild(makeSolid(ccColor4B{14, 16, 30, bgAlpha}, m_w, m_h), 0);
+        if (m_bg) {
+            m_bg->setOpacity(static_cast<GLubyte>(std::clamp(m_cfg.bgOpacity, 0.f, 1.f) * 255.f));
+        }
+        resizeSolid(m_bg, m_w, m_h, 0.f, 0.f);
 
-        // zona de acierto (ventana "Bien") alrededor del receptor
+        // zona de acierto (ventana "Bien") alrededor del receptor, sin salirse de la barra
         const float half = static_cast<float>(kGoodWin * m_recX / m_cfg.lookahead);
-        this->addChild(makeSolid(ccColor4B{255, 255, 255, 28}, half * 2.f, m_h, m_recX - half, 0.f), 0);
+        const float zl = std::max(0.f, m_recX - half);
+        const float zr = std::min(m_w, m_recX + half);
+        resizeSolid(m_zone, zr - zl, m_h, zl, 0.f);
 
-        m_layer = CCNode::create();
-        this->addChild(m_layer, 1);
+        resizeSolid(m_flashG, 34.f, m_h, m_recX - 17.f, 0.f);
+        resizeSolid(m_flashB, 16.f, m_h, m_recX - 8.f, 0.f);
 
-        // destellos del receptor: verde (exterior, al presionar) y celeste (interior, al soltar)
-        m_flashG = makeSolid(ccColor4B{60, 255, 100, 0}, 34.f, m_h, m_recX - 17.f, 0.f);
-        this->addChild(m_flashG, 2);
-
-        m_flashB = makeSolid(ccColor4B{80, 220, 255, 0}, 16.f, m_h, m_recX - 8.f, 0.f);
-        this->addChild(m_flashB, 3);
-
-        // borde de la barra: 4 franjas finas, siempre visibles aunque el fondo sea transparente
         const float b = 2.f;
-        const ccColor4B edge{140, 210, 255, 220};
-        this->addChild(makeSolid(edge, m_w, b, 0.f, 0.f), 5);
-        this->addChild(makeSolid(edge, m_w, b, 0.f, m_h - b), 5);
-        this->addChild(makeSolid(edge, b, m_h, 0.f, 0.f), 5);
-        this->addChild(makeSolid(edge, b, m_h, m_w - b, 0.f), 5);
+        resizeSolid(m_edge[0], m_w, b, 0.f, 0.f);          // abajo
+        resizeSolid(m_edge[1], m_w, b, 0.f, m_h - b);      // arriba
+        resizeSolid(m_edge[2], b, m_h, 0.f, 0.f);          // izquierda
+        resizeSolid(m_edge[3], b, m_h, m_w - b, 0.f);      // derecha
 
-        // linea receptora (timing line): sobresale un poco por arriba y por abajo
-        m_line = makeSolid(ccColor4B{255, 255, 255, 255}, 4.f, m_h + 10.f, m_recX - 2.f, -5.f);
-        this->addChild(m_line, 6);
+        resizeSolid(m_line, 4.f, m_h + 10.f, m_recX - 2.f, -5.f);
     }
 
     // ---- destellos ----
@@ -1493,7 +1530,9 @@ private:
 
     // ---- dibujo ----
 
-    // X dentro de la barra: receptor en m_recX, las notas futuras entran por la izquierda.
+    // X dentro de la barra: receptor en m_recX, las notas futuras entran por la izquierda
+    // y viajan hacia la derecha. px por segundo = m_recX / lookahead, o sea que la velocidad
+    // del popup multiplica directamente cuanto se desplazan las notas por segundo.
     float xAt(double t, double now) const {
         const double speed = m_recX / m_cfg.lookahead;  // px por segundo
         return static_cast<float>(m_recX - (t - now) * speed);
@@ -1593,10 +1632,25 @@ private:
 };
 
 // ------------------------------------------------------------ popup ----
+//
+// Tamano 420 x 300: la pantalla de GD mide 320 de alto, asi que el popup entra completo
+// (el anterior de 330 se salia por arriba y por abajo). Todas las posiciones son (dx, dy)
+// respecto al centro del popup. Anchos reales de ButtonSprite: ~ ancho pedido + 15.
+//
+//   columna izquierda:  x de -198 a  0     (dimensiones y velocidad)
+//   separador vertical: x = +7
+//   columna derecha:    x de  +20 a +196   (biblioteca de macros, centro en +108)
 
 class RhythmPopup : public geode::Popup {
 protected:
     static constexpr size_t kPerPage = 3;
+    static constexpr float kPopupW = 420.f;
+    static constexpr float kPopupH = 300.f;
+
+    // filas de ajustes (columna izquierda) y de la lista (columna derecha)
+    static constexpr float kRowY0 = 76.f;
+    static constexpr float kRowDY = 27.f;
+    static constexpr float kRightCX = 108.f;
 
     CCLabelBMFont* m_values[kRowCount] = {};
     CCLabelBMFont* m_pageLabel = nullptr;
@@ -1638,41 +1692,62 @@ protected:
     }
 
     bool init() {
-        if (!Popup::init(460.f, 330.f)) return false;
+        if (!Popup::init(kPopupW, kPopupH)) return false;
         this->setTitle("Barra de Ritmo");
 
         const ccColor3B gold{255, 220, 90};
+        const CCPoint center{0.5f, 0.5f};
+        const CCPoint leftAnchor{0.f, 0.5f};
 
-        // columna izquierda: dimensiones en tiempo real (+ / - estiran la barra solida)
-        this->addLabel("Dimensiones y Velocidad", -125.f, 118.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
-        for (size_t i = 0; i < kRowCount; ++i) {
-            const float y = 90.f - 32.f * static_cast<float>(i);
-            this->addLabel(kRows[i].label, -215.f, y, 0.4f, CCPoint{0.f, 0.5f});
-            this->addButton("-", 26, true, -120.f, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2);
-            m_values[i] = this->addLabel("", -80.f, y, 0.4f);
-            this->addButton("+", 26, true, -40.f, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2 + 1);
+        // separador vertical entre las dos columnas
+        {
+            auto divider = makeSolid(ccColor4B{0, 0, 0, 70}, 2.f, 138.f);
+            divider->setPosition(this->at(m_mainLayer, 7.f, -46.f));
+            m_mainLayer->addChild(divider, 3);
         }
-        this->addButton("Restablecer", 110, false, -125.f, -42.f, menu_selector(RhythmPopup::onReset), 0);
 
-        // columna derecha: biblioteca de macros
-        this->addLabel("Biblioteca de Macros", 115.f, 118.f, 0.4f, CCPoint{0.5f, 0.5f}, gold);
-        this->addButton("<", 28, false, 40.f, 4.f, menu_selector(RhythmPopup::onPage), 0, 22.f);
-        m_pageLabel = this->addLabel("1/1", 82.f, 4.f, 0.4f);
-        this->addButton(">", 28, false, 124.f, 4.f, menu_selector(RhythmPopup::onPage), 1, 22.f);
-        this->addButton("Quitar", 70, false, 182.f, 4.f, menu_selector(RhythmPopup::onRemove), 0, 22.f, 0.5f);
+        // ---- columna izquierda: dimensiones en tiempo real (+ / - estiran la barra solida) ----
+        this->addLabel("Dimensiones y Velocidad", -100.f, 104.f, 0.35f, center, gold);
+        for (size_t i = 0; i < kRowCount; ++i) {
+            const float y = kRowY0 - kRowDY * static_cast<float>(i);
+            this->addLabel(kRows[i].label, -198.f, y, 0.36f, leftAnchor);
+            this->addButton("-", 26, true, -108.f, y, menu_selector(RhythmPopup::onStep),
+                            static_cast<int>(i) * 2);
+            m_values[i] = this->addLabel("", -64.f, y, 0.4f);
+            this->addButton("+", 26, true, -20.f, y, menu_selector(RhythmPopup::onStep),
+                            static_cast<int>(i) * 2 + 1);
+        }
+        this->addButton("Restablecer", 100, false, -100.f, -33.f, menu_selector(RhythmPopup::onReset), 0);
 
-        // fila inferior: agregar una macro escribiendo solo su nombre
-        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -74.f, 0.35f,
-                       CCPoint{0.5f, 0.5f}, gold);
-        m_input = TextInput::create(290.f, "ej: macro.gdr2", "bigFont.fnt");
+        // ---- columna derecha: biblioteca de macros ----
+        this->addLabel("Biblioteca de Macros", kRightCX, 104.f, 0.35f, center, gold);
+        this->addButton("<", 28, false, 44.f, -8.f, menu_selector(RhythmPopup::onPage), 0, 22.f);
+        m_pageLabel = this->addLabel("1/1", kRightCX, -8.f, 0.4f);
+        this->addButton(">", 28, false, 172.f, -8.f, menu_selector(RhythmPopup::onPage), 1, 22.f);
+        this->addButton("Quitar", 70, false, kRightCX, -33.f, menu_selector(RhythmPopup::onRemove), 0,
+                        22.f, 0.5f);
+
+        // ---- Modo Experimento (casilla), ocupa su propia fila para no pisar nada ----
+        {
+            auto toggle = CCMenuItemToggler::createWithStandardSprites(
+                this, menu_selector(RhythmPopup::onExperiment), 0.7f);
+            toggle->setPosition(this->at(m_buttonMenu, -95.f, -61.f));
+            toggle->toggle(g_experiment);
+            m_buttonMenu->addChild(toggle);
+            this->addLabel("Modo Experimento (oculta el nivel)", -78.f, -61.f, 0.38f, leftAnchor);
+        }
+
+        // ---- fila inferior: agregar una macro escribiendo solo su nombre ----
+        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -83.f, 0.32f, center, gold);
+        m_input = TextInput::create(260.f, "ej: macro.gdr2", "bigFont.fnt");
         m_input->setFilter(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-()[]+,'&!#@%=/\\:");
         m_input->setMaxCharCount(120);
-        m_input->setPosition(this->at(m_mainLayer, -60.f, -102.f));
+        m_input->setPosition(this->at(m_mainLayer, -62.f, -105.f));
         m_mainLayer->addChild(m_input, 5);
-        this->addButton("Agregar", 100, true, 145.f, -102.f, menu_selector(RhythmPopup::onAdd), 0, 26.f);
+        this->addButton("Agregar", 90, true, 140.f, -105.f, menu_selector(RhythmPopup::onAdd), 0, 26.f);
 
-        m_activeLabel = this->addLabel("", 0.f, -136.f, 0.35f);
+        m_activeLabel = this->addLabel("", 0.f, -132.f, 0.32f);
 
         this->refreshValues();
         this->rebuildList();
@@ -1708,15 +1783,16 @@ protected:
         const auto activeKey = activePath ? pathKey(pathToUtf8(*activePath)) : pathKey(cfg.macroFile);
 
         if (m_library.empty()) {
-            m_listNodes.push_back(this->addLabel("Sin macros guardadas", 115.f, 62.f, 0.35f));
+            m_listNodes.push_back(this->addLabel("Sin macros guardadas", kRightCX, kRowY0 - kRowDY, 0.35f));
         }
         for (size_t k = 0; k < kPerPage; ++k) {
             const size_t i = m_page * kPerPage + k;
             if (i >= m_library.size()) break;
-            const auto name = asciiOnly(pathToUtf8(utf8ToPath(m_library[i]).filename()), 22);
+            // 17 caracteres entran dentro del boton (se recorta con "..." si es mas largo)
+            const auto name = asciiOnly(pathToUtf8(utf8ToPath(m_library[i]).filename()), 17);
             const bool active = pathKey(m_library[i]) == activeKey;  // verde = macro activa
-            const float y = 90.f - 28.f * static_cast<float>(k);
-            m_listNodes.push_back(this->addButton(name.c_str(), 170, active, 115.f, y,
+            const float y = kRowY0 - kRowDY * static_cast<float>(k);
+            m_listNodes.push_back(this->addButton(name.c_str(), 160, active, kRightCX, y,
                                                   menu_selector(RhythmPopup::onPick),
                                                   static_cast<int>(i), 24.f, 0.5f));
         }
@@ -1749,6 +1825,14 @@ protected:
         if (tag == 0 && m_page > 0) --m_page;
         else if (tag == 1) ++m_page;  // rebuildList lo limita a la ultima pagina
         this->rebuildList();
+    }
+
+    // El toggler cambia su propio aspecto; aqui solo se invierte el estado del mod y se aplica ya.
+    void onExperiment(CCObject*) {
+        g_experiment = !g_experiment;
+        RhythmBar::applyExperimentNow();
+        Notification::create(g_experiment ? "Modo Experimento: ACTIVADO" : "Modo Experimento: DESACTIVADO",
+                             g_experiment ? NotificationIcon::Success : NotificationIcon::Info)->show();
     }
 
     // Busca la macro por nombre, la valida, la agrega a la biblioteca y la activa al instante.
@@ -1859,6 +1943,44 @@ public:
     }
 };
 
+// ------------------------------------------- colocacion en el menu de pausa ----
+// Rectangulo de un nodo expresado en las coordenadas de `space`.
+CCRect rectIn(CCNode* space, CCNode* n) {
+    const CCRect bb = n->boundingBox();  // en el espacio del padre
+    CCNode* parent = n->getParent();
+    if (!parent) return bb;
+    const CCPoint a = space->convertToNodeSpace(
+        parent->convertToWorldSpace(ccp(bb.origin.x, bb.origin.y)));
+    const CCPoint b = space->convertToNodeSpace(
+        parent->convertToWorldSpace(ccp(bb.origin.x + bb.size.width, bb.origin.y + bb.size.height)));
+    return CCRect(std::min(a.x, b.x), std::min(a.y, b.y), std::fabs(b.x - a.x), std::fabs(b.y - a.y));
+}
+
+bool rectsOverlap(CCRect const& a, CCRect const& b) {
+    return a.origin.x < b.origin.x + b.size.width && b.origin.x < a.origin.x + a.size.width &&
+           a.origin.y < b.origin.y + b.size.height && b.origin.y < a.origin.y + a.size.height;
+}
+
+// Junta los rectangulos ocupados por botones / textos / barras del menu de pausa.
+// Los menus se recorren por dentro (su propio rectangulo ocupa toda la pantalla) y los
+// nodos gigantes (fondos) se ignoran.
+void collectBusyRects(CCNode* space, CCNode* root, CCSize const& win, std::vector<CCRect>& out,
+                      int depth = 0) {
+    auto children = root->getChildren();
+    if (!children || depth > 2) return;
+    for (auto child : CCArrayExt<CCNode*>(children)) {
+        if (!child || !child->isVisible()) continue;
+        if (typeinfo_cast<CCMenu*>(child) != nullptr) {
+            collectBusyRects(space, child, win, out, depth + 1);
+            continue;
+        }
+        const CCRect r = rectIn(space, child);
+        if (r.size.width <= 1.f || r.size.height <= 1.f) continue;
+        if (r.size.width >= win.width * 0.8f || r.size.height >= win.height * 0.8f) continue;
+        out.push_back(r);
+    }
+}
+
 }  // namespace
 
 // ------------------------------------------------------------- hooks ----
@@ -1868,7 +1990,10 @@ class $modify(RhythmPlayLayer, PlayLayer) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
 
         const auto cfg = loadConfig();
-        if (!cfg.enabled) return true;
+        if (!cfg.enabled) {
+            log::info("Rhythm Bar: desactivado (ajuste \"enabled\"), no se crea la barra");
+            return true;
+        }
 
         // La barra se crea aunque la macro falle: asi se puede elegir otra desde el popup.
         auto res = loadMacro(cfg);
@@ -1877,9 +2002,18 @@ class $modify(RhythmPlayLayer, PlayLayer) {
         }
 
         auto bar = RhythmBar::create(std::move(res.macro), cfg);
-        if (!bar) return true;
+        if (!bar) {
+            log::error("Rhythm Bar: no se pudo crear la barra");
+            return true;
+        }
         bar->setID("rhythm-bar"_spr);
-        m_uiLayer->addChild(bar, 100);
+        m_uiLayer->addChild(bar, 1000);
+
+        // Diagnostico: si la barra no se ve, mira estas lineas en el log de Geode.
+        const auto size = bar->barSize();
+        const auto pos = bar->getPosition();
+        log::info("Rhythm Bar: barra agregada a la UI ({}x{} en {},{}; visible={}; z={})", size.width,
+                  size.height, pos.x, pos.y, bar->isVisible(), bar->getZOrder());
         return true;
     }
 };
@@ -1902,9 +2036,9 @@ class $modify(RhythmBaseGameLayer, GJBaseGameLayer) {
 };
 
 /*
- * Botones del mod en el menu de pausa: "Ritmo" (abre el popup) y "Modo Experimento" (toggle).
- * Van en un menu propio, compactos, en una esquina libre (ver RPB_PAUSE_CORNER arriba), asi no
- * se pisan con los botones centrales ni con los menus laterales de GD / Geode.
+ * Menu de pausa: UN solo boton, "Ritmo" (abre el popup, donde tambien esta el Modo Experimento).
+ * Se coloca en la primera esquina que no se superponga con nada del menu de pausa
+ * (abajo-izquierda, abajo-derecha, arriba-derecha, arriba-izquierda), siempre dentro de la pantalla.
  */
 class $modify(RhythmPauseLayer, PauseLayer) {
     void customSetup() {
@@ -1912,57 +2046,52 @@ class $modify(RhythmPauseLayer, PauseLayer) {
 
         const auto win = CCDirector::get()->getWinSize();
 
-        auto ritmoSpr = ButtonSprite::create("Ritmo", 54, true, "bigFont.fnt", "GJ_button_01.png", 24.f, 0.5f);
-        auto ritmoBtn = CCMenuItemSpriteExtra::create(ritmoSpr, nullptr, this,
-                                                      menu_selector(RhythmPauseLayer::onRhythmMenu));
-        ritmoBtn->setID("rhythm-menu-button"_spr);
+        auto spr = ButtonSprite::create("Ritmo", 54, true, "bigFont.fnt", "GJ_button_01.png", 24.f, 0.5f);
+        auto btn = CCMenuItemSpriteExtra::create(spr, nullptr, this,
+                                                 menu_selector(RhythmPauseLayer::onRhythmMenu));
+        btn->setID("rhythm-menu-button"_spr);
 
-        // gris = apagado, verde = encendido
-        auto offSpr = ButtonSprite::create("Modo Experimento", 150, true, "bigFont.fnt", "GJ_button_02.png", 24.f, 0.45f);
-        auto onSpr = ButtonSprite::create("Modo Experimento", 150, true, "bigFont.fnt", "GJ_button_01.png", 24.f, 0.45f);
-        auto toggle = CCMenuItemToggler::create(offSpr, onSpr, this,
-                                                menu_selector(RhythmPauseLayer::onExperiment));
-        toggle->setID("rhythm-experiment-toggle"_spr);
-        toggle->toggle(g_experiment);
-
+        const auto size = spr->getContentSize();
         const float margin = 8.f;
-        const float gap = 6.f;
-        const auto rs = ritmoSpr->getContentSize();
-        const auto ts = offSpr->getContentSize();
-        const float colW = std::max(rs.width, ts.width);
-        const bool right = (RPB_PAUSE_CORNER & 1) != 0;
-        const bool bottom = (RPB_PAUSE_CORNER & 2) != 0;
+        const float w = size.width;
+        const float h = size.height;
 
-        const float cx = right ? win.width - margin - colW / 2.f : margin + colW / 2.f;
-        const float step = (rs.height + ts.height) / 2.f + gap;
-        float yRitmo, yToggle;
-        if (!bottom) {
-            yRitmo = win.height - margin - rs.height / 2.f;
-            yToggle = yRitmo - step;
-        } else {
-            yToggle = margin + ts.height / 2.f;
-            yRitmo = yToggle + step;
+        const CCPoint candidates[] = {
+            ccp(margin + w / 2.f, margin + h / 2.f),                              // abajo-izquierda
+            ccp(win.width - margin - w / 2.f, margin + h / 2.f),                  // abajo-derecha
+            ccp(win.width - margin - w / 2.f, win.height - margin - h / 2.f),     // arriba-derecha
+            ccp(margin + w / 2.f, win.height - margin - h / 2.f),                 // arriba-izquierda
+        };
+
+        std::vector<CCRect> busy;
+        collectBusyRects(this, this, win, busy);
+
+        CCPoint chosen = candidates[0];
+        for (auto const& c : candidates) {
+            const float pad = 4.f;
+            const CCRect mine(c.x - w / 2.f - pad, c.y - h / 2.f - pad, w + 2.f * pad, h + 2.f * pad);
+            bool free = true;
+            for (auto const& r : busy) {
+                if (rectsOverlap(mine, r)) {
+                    free = false;
+                    break;
+                }
+            }
+            if (free) {
+                chosen = c;
+                break;
+            }
         }
-        ritmoBtn->setPosition({cx, yRitmo});
-        toggle->setPosition({cx, yToggle});
+        btn->setPosition(chosen);
 
         auto menu = CCMenu::create();
         menu->setID("rhythm-menu"_spr);
         menu->setPosition({0.f, 0.f});
-        menu->addChild(ritmoBtn);
-        menu->addChild(toggle);
+        menu->addChild(btn);
         this->addChild(menu, 10);
     }
 
     void onRhythmMenu(CCObject*) {
         if (auto popup = RhythmPopup::create()) popup->show();
-    }
-
-    // El toggler cambia su propio aspecto; aqui solo se invierte el estado del mod y se aplica ya.
-    void onExperiment(CCObject*) {
-        g_experiment = !g_experiment;
-        RhythmBar::applyExperimentNow();
-        Notification::create(g_experiment ? "Modo Experimento: ACTIVADO" : "Modo Experimento: DESACTIVADO",
-                             g_experiment ? NotificationIcon::Success : NotificationIcon::Info)->show();
     }
 };
