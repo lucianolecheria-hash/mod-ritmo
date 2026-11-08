@@ -1,24 +1,40 @@
 /*
- * Rhythm Practice Bar  v1.50  (luchx.barra-ritmo-final)
+ * Rhythm Practice Bar  v1.600  (luchx.barra-ritmo-final)
  * Barra estilo juego de ritmo para practicar el timing de clics a partir de una macro
- * de Mega Hack / .gdr2. Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor):
- * CERO texturas del juego. Sin reaparicion automatica ni StartPos virtual (eso lo maneja el
- * jugador a mano): el mod solo dibuja, juzga y muestra resultados.
+ * de Mega Hack / .gdr2. Todo el dibujo de la barra usa rectangulos solidos (CCLayerColor).
+ * Unica excepcion: el check verde del filtro noclip usa GJ_completes_001.png (si el sprite no
+ * existe se dibuja un check con CCDrawNode). Sin reaparicion automatica ni StartPos virtual
+ * (eso lo maneja el jugador a mano): el mod solo dibuja, juzga y muestra resultados.
  *
- * NOVEDADES v1.50
- *  1) Sin barras celestes. Cada nota de la macro se dibuja como un hold limpio: contenedor verde
- *     (bajada) -> barra -> contenedor verde (subida). Al acertar la bajada la barra queda anclada
- *     al receptor y se va "consumiendo" mientras se mantiene el boton. Si la macro trae un 2do
- *     jugador, sus clics y holds se dibujan en MORADO CLARO (solo visual: el juicio es de P1).
- *  2) Precision: el juicio trabaja con CUADROS ENTEROS (llround(levelTime * fps)) tanto del
- *     jugador como de la macro. El Desfase (ms) ahora es SOLO visual (mueve el dibujo de las
- *     notas) y ya no entra al juicio: antes el valor por defecto (-5 ms = +1.2 cuadros a 240 fps)
- *     convertia un clic exacto en "Perfecto+!". Por defecto el Desfase pasa a 0 ms.
- *     kInputFrameBias (0) queda como ajuste fino por si una version del juego aplica el clic un
- *     paso antes / despues de avanzar m_levelTime.
- *  3) Direccion de las notas: Izquierda->Derecha, Derecha->Izquierda, Arriba->Abajo y Abajo->Arriba
- *     (barra vertical). "Altura Barra" mueve toda la estructura por el eje Y.
- *  4) Casilla "Mini-Barra Superior": setVisible(false) sobre toda la mini-barra de micro-frames.
+ * NOVEDADES v1.600
+ *  1) Interfaz del popup "Ritmo": etiquetas y flechas (-, +, <, >) mas chicas y alineadas en una
+ *     sola grilla (columna de etiquetas / boton - / valor / boton +), "Direccion" incluida, con
+ *     nombres de direccion cortos (Izq>Der...) para que no se pisen con las flechas. El boton de
+ *     cerrar (X) se escala y se coloca DENTRO del marco marron (esquina superior izquierda, con
+ *     margen) en el popup de ajustes y en el de resultados: ya no sobresale ni tapa nada.
+ *  2) Calibracion frame-perfect. Causa raiz del "Perfecto+" de los bots: el cuadro del jugador se
+ *     sacaba de llround(m_levelTime * fps) leido DENTRO de handleButton, y m_levelTime puede ir un
+ *     paso adelantado respecto al contador que los bots escriben en la macro. Ese desfase
+ *     constante de +1 cuadro afectaba solo al PULSAR; el SOLTAR se comparaba por duracion (resta de
+ *     dos cuadros con el mismo error) y por eso el release ya salia "Excelente!". Ahora el cuadro
+ *     sale del MISMO contador que usan los bots (GJGameState::m_currentProgress, ver frameNow()),
+ *     con respaldo al tiempo del nivel si ese contador no concuerda (+-kStepTolerance). El
+ *     juicio sigue siendo classifyFrames(): 0 cuadros = "Excelente!".
+ *     Si en tu build un clic exacto de bot aun sale +-1, el unico ajuste es kInputFrameBias.
+ *     En el log de Geode (nivel debug) cada pulsar escribe "cuadro / macro / dif".
+ *  3) Macro Toggle: un segundo clic sobre la macro activa de la biblioteca la DESACTIVA al
+ *     instante (se corta la lluvia de notas, los holds en vivo y las estadisticas). Borrar el
+ *     texto del cuadro de macro tambien la desactiva, y "Quitar" desactiva la macro que saca de
+ *     la biblioteca. Se guarda como valor "macro-active" (no hace falta tocar mod.json).
+ *  4) Filtro Noclip Inteligente: un Temprano / Tarde cuya colision letal NO ocurrio en la hitbox
+ *     real (no hubo destroyPlayer en una ventana alrededor del clic) se marca como "salvado":
+ *     el cartel se muestra igual, con un check verde al lado. Un salvado NO rompe ni suma al
+ *     combo y queda FUERA del promedio de precision (ni sube ni baja). Se cuentan aparte
+ *     ("Salvados") en la pantalla de resultados. Los juicios se aplican en orden (cola), asi el
+ *     combo maximo no se infla mientras se espera la resolucion.
+ *     Nota: la deteccion engancha PlayLayer::destroyPlayer con prioridad alta para verlo antes que
+ *     un noclip que lo salte. Si tu noclip bloquea la colision antes de llegar ahi, todos los
+ *     Temprano / Tarde se veran como salvados.
  *
  * JUICIO POR FRAMES EXACTOS (usa los fps de la macro; 240 si el archivo no los trae):
  *   - Pulsar: frame del clic del jugador contra frame de la macro (juicio principal).
@@ -28,30 +44,28 @@
  *       0 frames de diferencia  -> "Excelente!"   (cian brillante)
  *       +-1 frame               -> "Perfecto+!"   (verde lima)
  *       +-2 a 3 frames          -> "Perfecto!"    (verde)
- *       mas de 3 frames         -> "Temprano" / "Tarde"
+ *       mas de 3 frames         -> "Temprano" / "Tarde"  (con check verde si fue salvado)
  *       sin pulsar / sin soltar -> "Fallo!"       (un solo Fallo por clic)
  *
  * - Combo ACUMULATIVO (RunStats::combo / RunStats::maxCombo): "Excelente!", "Perfecto+!" y
- *   "Perfecto!" suman; solo "Temprano", "Tarde" o "Fallo!" lo reinician a 0.
+ *   "Perfecto!" suman; solo "Temprano", "Tarde" o "Fallo!" (no salvados) lo reinician a 0.
  * - Pantalla de resultados estilo osu! (RhythmResultsPopup) con el mapa de calor / grafica de
- *   precision por tramo dibujada con CCDrawNode (sin cambios respecto a v1.4x).
+ *   precision por tramo dibujada con CCDrawNode.
  * - Popup "Ritmo" (boton del menu de pausa) con ajustes en tiempo real: Largo, Grosor,
  *   Altura Barra, Fondo, Velocidad, Desfase (ms), Direccion, Modo Experimento, Ocultar Barra,
  *   Mini-Barra Superior y biblioteca de macros.
  *
- * Nota sobre el logo de FNF: este archivo no contiene ningun logo de FNF (la barra usa solo
- * rectangulos solidos), asi que no hay nada que conservar ni que agregar.
- *
  * Equivalencias de nombres (por si se buscan por el nombre del pedido):
- *   evaluarPrecisionFrame      -> classifyFrames() + RhythmBar::judgePress() / judgeRelease()
+ *   evaluarPrecisionFrame      -> classifyFrames() + RhythmBar::judgePress() / judgeRelease(),
+ *                                 con el cuadro de RhythmBar::frameNow()
  *   m_audioOffsetMs            -> ajuste "offset" (kOffsetDef / Config::offset, solo visual)
  *   m_currentCombo, m_maxCombo -> RunStats::combo, RunStats::maxCombo
  *   desplegarPantallaResultadosOsu -> RhythmResultsPopup (lo abre RhythmBar::openResults)
  *
  * Persistencia: cada ajuste se guarda con Mod::get()->setSettingValue cuando esta declarado en
  * mod.json (bar-width, bar-height, bg-opacity, offset, ...). Los que no esten declarados
- * (scroll-speed, bar-y, hide-bar, bar-dir, show-minibar) se guardan como valor guardado del mod,
- * que tambien persiste.
+ * (scroll-speed, bar-y, hide-bar, bar-dir, show-minibar, macro-active) se guardan como valor
+ * guardado del mod, que tambien persiste.
  *
  * Formatos que lee parseMacro():
  *   - GDR2 binario (.gdr2, formato de maxnut/GDReplayFormat): se lee directo de los bytes
@@ -71,8 +85,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -683,10 +699,22 @@ constexpr double kZoneWin = 0.050;  // solo visual: zona sombreada alrededor del
 constexpr int kPerfectPlusFrames = 1;  // +-1 -> Perfecto+!
 constexpr int kPerfectFrames = 3;      // +-2..3 -> Perfecto!
 
-// Ajuste fino (en cuadros) del cuadro del jugador. 0 = el cuadro que muestra m_levelTime en
-// handleButton coincide con el de la macro. Si en tu version del juego un clic exacto siempre
-// sale +1 / -1, pon -1 / +1 aqui (es el unico punto donde se toca el paso de tiempo).
+// Ajuste fino (en cuadros) del cuadro del jugador, DESPUES de usar el contador de pasos de los
+// bots (ver RhythmBar::frameNow). 0 = un clic exacto de bot da 0 cuadros de diferencia. Si en tu
+// build siempre sale +1 / -1, pon -1 / +1 aqui (es el unico punto donde se toca el cuadro).
 constexpr int kInputFrameBias = 0;
+
+// frameNow(): se usa el contador de pasos del juego si difiere del cuadro por tiempo en menos
+// de esto; si no (otro tps, checkpoint raro) se usa el cuadro por tiempo.
+constexpr int kStepTolerance = 2;
+
+// Filtro noclip: ventana (en cuadros) alrededor de un Temprano / Tarde donde una colision letal
+// de la hitbox real cuenta como "habria muerto".
+constexpr int kLethalBeforeFrames = 3;    // cuadros antes del clic / del cuadro ideal
+constexpr double kSurviveAfterSec = 0.10; // segundos despues del clic / del cuadro ideal
+constexpr size_t kLethalCap = 512;        // colisiones letales recordadas
+constexpr int kLethalIgnoreFrames = 3;    // ignora colisiones de los primeros cuadros (anticheat)
+constexpr int32_t kLethalHookPriority = -100000;  // bajo = el hook corre antes que un noclip
 
 constexpr int kMicroRange = 8;       // la mini-barra muestra +-8 frames
 constexpr float kMicroH = 10.f;      // alto de la mini-barra
@@ -711,7 +739,8 @@ constexpr int64_t kOffsetDef = 0;
 // Direccion en la que corren las notas.
 enum class BarDir : int { LeftToRight = 0, RightToLeft = 1, TopToBottom = 2, BottomToTop = 3 };
 
-char const* const kDirNames[4] = {"Izq > Der", "Der > Izq", "Arr > Aba", "Aba > Arr"};
+// Nombres cortos (sin espacios) para que quepan entre las flechas del popup.
+char const* const kDirNames[4] = {"Izq>Der", "Der>Izq", "Arr>Aba", "Aba>Arr"};
 
 const ccColor3B kColWhite{255, 255, 255};
 const ccColor3B kColGreen{60, 255, 100};
@@ -734,6 +763,7 @@ struct Config {
     bool enabled = true;
     bool hidden = false;        // "hide-bar": Ocultar Barra
     bool showMiniBar = true;    // "show-minibar": mini-barra de micro-frames
+    bool macroActive = true;    // "macro-active": false = macro desactivada (toggle de la biblioteca)
     int dir = 0;                // "bar-dir": ver BarDir
     std::string macroFile = "macro.txt";
     float barWidthPct = 60.f;   // "bar-width": largo de la barra, % del ancho (o del alto si es vertical)
@@ -808,6 +838,15 @@ void setMiniBarSetting(bool v) {
     setBoolSetting("show-minibar", v);
 }
 
+// Macro Toggle: false = hay una macro elegida pero esta desactivada (la barra no dibuja ni juzga).
+bool macroActiveSetting() {
+    return boolSetting("macro-active", true);
+}
+
+void setMacroActiveSetting(bool v) {
+    setBoolSetting("macro-active", v);
+}
+
 int dirSetting() {
     return static_cast<int>(std::clamp<int64_t>(intSetting("bar-dir", 0), 0, 3));
 }
@@ -834,6 +873,7 @@ Config loadConfig() {
     c.enabled = boolSetting("enabled", true);
     c.hidden = hideBarSetting();
     c.showMiniBar = miniBarSetting();
+    c.macroActive = macroActiveSetting();
     c.dir = dirSetting();
     c.macroFile = macroFileSetting();
     c.barWidthPct = static_cast<float>(std::clamp<int64_t>(intSetting("bar-width", 60), 10, 100));
@@ -919,8 +959,10 @@ std::string asciiOnly(std::string const& s, size_t maxLen) {
     return out;
 }
 
+// La clave incluye si la macro esta activa: activar / desactivar cuenta como "macro cambiada".
 std::string macroKey(Config const& c) {
-    return c.macroFile + "|" + std::to_string(c.parser.fps) + "|" + std::to_string(c.parser.tapThreshold);
+    const std::string file = c.macroActive ? c.macroFile : std::string("<ninguna>");
+    return file + "|" + std::to_string(c.parser.fps) + "|" + std::to_string(c.parser.tapThreshold);
 }
 
 // ------------------------------------------------- buscador de macros ----
@@ -1132,6 +1174,13 @@ std::string pathKey(std::string const& s) {
     return rpb::lower(pathToUtf8(utf8ToPath(s).lexically_normal()));
 }
 
+// Clave de la macro elegida en los ajustes (sin recorrer carpetas). Sirve para marcarla en la
+// biblioteca, para el toggle del segundo clic y para "Quitar".
+std::string activeKeyOf(Config const& cfg) {
+    const auto p = findMacro(cfg.macroFile, false);
+    return p ? pathKey(pathToUtf8(*p)) : pathKey(cfg.macroFile);
+}
+
 std::vector<std::string> loadLibrary() {
     std::vector<std::string> out;
     std::string text;
@@ -1170,6 +1219,12 @@ bool saveLibrary(std::vector<std::string> const& list) {
  */
 double currentLevelTime(PlayLayer* pl) {
     return pl->m_gameState.m_levelTime;
+}
+
+// Contador de pasos de fisica del juego: es el "frame" que los bots escriben en la macro.
+// Si tu version de los bindings lo llama distinto, este es el unico lugar donde cambiarlo.
+int physicsStep(PlayLayer* pl) {
+    return static_cast<int>(pl->m_gameState.m_currentProgress);
 }
 
 // Porcentaje actual del nivel (0..100): es el eje X de la grafica de la pantalla de resultados.
@@ -1237,17 +1292,25 @@ struct RunStats {
     uint32_t counts[kJudgeCount] = {};
     uint32_t combo = 0;     // aciertos limpios consecutivos (Excelente! / Perfecto+! / Perfecto!)
     uint32_t maxCombo = 0;  // pico mas alto de esa racha
+    uint32_t survivedEarly = 0;  // Temprano salvados (la hitbox real no habria muerto)
+    uint32_t survivedLate = 0;   // Tarde salvados
     std::vector<JudgeSample> samples;
 
     void reset() { *this = RunStats{}; }
 
+    // Juicios que cuentan para la precision (no incluye los salvados).
     uint32_t total() const {
         uint32_t n = 0;
         for (auto c : counts) n += c;
         return n;
     }
 
-    // Porcentaje de precision 0..100.
+    uint32_t survived() const { return survivedEarly + survivedLate; }
+
+    // Todo lo que paso en la run, incluidos los salvados.
+    uint32_t shown() const { return total() + survived(); }
+
+    // Porcentaje de precision 0..100. Los salvados quedan FUERA del promedio: ni suben ni bajan.
     double accuracy() const {
         const uint32_t n = total();
         if (n == 0) return 0.0;
@@ -1265,6 +1328,12 @@ struct RunStats {
             combo = 0;  // solo Temprano, Tarde y Fallo! lo cortan por completo
         }
         if (samples.size() < kMaxSamples) samples.push_back({pct, j});
+    }
+
+    // Temprano / Tarde que no habria matado: no rompe el combo, no lo suma y no toca la precision.
+    void addSurvived(Judge j) {
+        if (j == Judge::Early) ++survivedEarly;
+        else ++survivedLate;
     }
 };
 
@@ -1343,6 +1412,15 @@ protected:
         m_buttonMenu->addChild(btn);
         return btn;
     }
+
+    // Boton de cerrar (X): mas chico y DENTRO del marco marron, en la esquina superior izquierda,
+    // con margen. Por defecto Geode lo deja asomando por fuera de la esquina. Se llama justo
+    // despues de Popup::init con el tamano del popup.
+    void tidyCloseButton(float w, float h) {
+        if (!m_closeBtn) return;
+        m_closeBtn->setScale(0.62f);
+        m_closeBtn->setPosition(this->at(m_buttonMenu, -w / 2.f + 16.f, h / 2.f - 16.f));
+    }
 };
 
 // ------------------------------------------- grafica de precision por tramo ----
@@ -1398,12 +1476,34 @@ ccColor4F drawColor(ccColor3B c, float a) {
                  static_cast<float>(c.b) / 255.f * a, a);
 }
 
+// Check verde de los aciertos "salvados" (filtro noclip). Usa GJ_completes_001.png; si el sprite
+// no existe (o Geode devolvio su textura de reemplazo) se dibuja un check con CCDrawNode.
+// Devuelve un contenedor centrado en (0, 0) que mide aprox. `size` px.
+CCNode* makeCheckMark(float size) {
+    auto holder = CCNode::create();
+    if (auto spr = CCSprite::createWithSpriteFrameName("GJ_completes_001.png")) {
+        const auto cs = spr->getContentSize();
+        if (!spr->getUserObject("geode.texture-loader/fallback") && cs.width > 1.f && cs.height > 1.f) {
+            spr->setScale(size / std::max(cs.width, cs.height));
+            holder->addChild(spr);
+            return holder;
+        }
+    }
+    auto draw = CCDrawNode::create();
+    const float r = size * 0.09f;
+    const ccColor4F col = drawColor(kColGreen, 1.f);
+    draw->drawSegment(ccp(-0.50f * size, 0.00f * size), ccp(-0.15f * size, -0.40f * size), r, col);
+    draw->drawSegment(ccp(-0.15f * size, -0.40f * size), ccp(0.50f * size, 0.45f * size), r, col);
+    holder->addChild(draw);
+    return holder;
+}
+
 // ------------------------------------------- pantalla de resultados (osu!) ----
 // Popup 440 x 300 (cabe tambien en pantallas 4:3). Posiciones (dx, dy) desde el centro:
 //   cabecera:  nota + precision total (izquierda), combo maximo (derecha)
 //   fila:      conteo exacto de cada juicio (6 columnas)
 //   grafica:   precision por tramo del nivel + tira de calor
-//   pie:       total / macro + boton OK
+//   pie:       total / salvados / macro + boton OK
 
 class RhythmResultsPopup : public RhythmPopupBase {
 protected:
@@ -1538,6 +1638,7 @@ protected:
     bool init(RunStats const& s, std::string const& macroName) {
         if (!Popup::init(kW, kH)) return false;
         this->setTitle("Resultados");
+        this->tidyCloseButton(kW, kH);
 
         const CCPoint center{0.5f, 0.5f};
 
@@ -1566,8 +1667,11 @@ protected:
         // grafica de precision por tramo del nivel
         this->addGraph(s);
 
-        auto info = this->addLabel("Total: " + std::to_string(s.total()) + " juicios   Macro: " + macroName,
-                                   0.f, -88.f, 0.28f, center, kColGray);
+        // pie: los salvados (Temprano / Tarde sin muerte real) van aparte y no cuentan en la precision
+        std::string line = "Total: " + std::to_string(s.total()) + " juicios";
+        if (s.survived() > 0) line += "   Salvados: " + std::to_string(s.survived());
+        line += "   Macro: " + macroName;
+        auto info = this->addLabel(line, 0.f, -88.f, 0.28f, center, kColGray);
         fitLabel(info, 0.28f, 390.f);
 
         this->addButton("OK", 80, true, 0.f, -116.f, menu_selector(RhythmResultsPopup::onOk), 0, 28.f, 0.7f);
@@ -1632,6 +1736,19 @@ protected:
         float x, y, w, h;
     };
 
+    // Un juicio esperando su turno para entrar a las estadisticas. Los juicios se aplican SIEMPRE
+    // en orden: un Temprano / Tarde (defer) espera a saber si la hitbox real habria muerto, y los
+    // que vienen detras esperan con el, asi el combo y el combo maximo salen bien.
+    struct QueuedJudge {
+        Judge j = Judge::Miss;
+        float pct = 0.f;
+        bool defer = false;  // Temprano / Tarde
+        int lo = 0;          // ventana de cuadros donde una colision letal cuenta
+        int hi = 0;
+        Ref<CCNode> box;               // cartel donde se pondra el check si se salva
+        Ref<CCLabelBMFont> label;
+    };
+
     // Como se recorta / ancla una barra de hold respecto al receptor.
     enum class BarMode { Free, Clip, Pin };
 
@@ -1641,13 +1758,19 @@ protected:
     std::vector<Click> m_clicks;
     double m_fps = 240.0;
     int m_outer = 60;           // ventana exterior en cuadros
+    int m_lethalAfter = 24;     // cuadros que se espera una colision letal tras un Temprano / Tarde
     size_t m_pCursor = 0;       // primer clic cuyo "pulsar" aun no expiro
     size_t m_rCursor = 0;       // primer clic con algo sin resolver
     size_t m_active = kNone;    // clic de la macro que el jugador esta sosteniendo (acertado)
     RunStats m_stats;
+    bool m_macroOn = false;     // hay una macro cargada y activa (false = desactivada / sin clics)
     bool m_finished = false;    // nivel completado: se congelan juicios y estadisticas
     Config m_cfg;
     std::string m_macroKey;
+
+    // filtro noclip
+    std::deque<QueuedJudge> m_queue;  // juicios pendientes de entrar a m_stats
+    std::vector<int> m_lethal;        // cuadros (ascendentes) con colision letal de la hitbox real
 
     // geometria actual
     BarDir m_dir = BarDir::LeftToRight;
@@ -1678,7 +1801,8 @@ protected:
     CCLayerColor* m_markH = nullptr;   // marcador del error del hold (mitad inferior)
 
     CCNode* m_layer = nullptr;         // contenedor de notas / holds / huella
-    CCLabelBMFont* m_label = nullptr;  // cartel de juicio
+    CCNode* m_box = nullptr;           // contenedor del cartel de juicio (sube) + check de salvado
+    CCLabelBMFont* m_label = nullptr;  // cartel de juicio (hijo de m_box)
     CCLabelBMFont* m_combo = nullptr;  // contador de combo de aciertos limpios
     std::vector<CCLayerColor*> m_pool;
     size_t m_used = 0;
@@ -1756,11 +1880,16 @@ public:
 
         if (macroChanged) {
             m_macroKey = key;
-            auto res = loadMacro(c);
-            if (res.ok) {
-                this->setMacro(std::move(res.macro), res.fps);
+            if (!c.macroActive) {
+                // Macro Toggle: desactivada -> se corta la lluvia de notas y se limpian los holds en vivo
+                this->clearMacro();
             } else {
-                Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
+                auto res = loadMacro(c);
+                if (res.ok) {
+                    this->setMacro(std::move(res.macro), res.fps);
+                } else {
+                    Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
+                }
             }
         }
 
@@ -1772,12 +1901,13 @@ public:
     // Entrada del jugador (P1, salto) tal como la entrega el juego en cada paso de fisica.
     //
     // PASO DE TIEMPO: el juicio usa el cuadro entero de fisica en el que el juego APLICA el clic
-    // (llround(m_levelTime * fps)), sin Desfase ni ninguna correccion en milisegundos. El Desfase
-    // visual solo entra al dibujo (rastro del jugador), nunca al cuadro que se compara con la macro.
-    void onInput(bool down, double levelTime) {
-        if (!m_cfg.enabled || m_finished) return;
-        const int frame = this->stepFrame(levelTime);  // juicio
-        const double tv = levelTime - m_cfg.offset;    // dibujo
+    // (frameNow: el mismo contador que usan los bots al escribir la macro), sin Desfase ni
+    // ninguna correccion en milisegundos. El Desfase visual solo entra al dibujo (rastro del
+    // jugador), nunca al cuadro que se compara con la macro.
+    void onInput(bool down, PlayLayer* pl) {
+        if (!m_cfg.enabled || m_finished || !m_macroOn || !pl) return;
+        const int frame = this->frameNow(pl);                      // juicio
+        const double tv = currentLevelTime(pl) - m_cfg.offset;     // dibujo
         if (!m_synced) this->resync(frame, true, false);
 
         if (down) {
@@ -1795,6 +1925,19 @@ public:
         }
     }
 
+    // Colision letal de la hitbox real (PlayLayer::destroyPlayer), la haya bloqueado un noclip o no.
+    // Se guarda el cuadro: un Temprano / Tarde con una colision dentro de su ventana NO se salva.
+    void onLethal(PlayLayer* pl) {
+        if (!m_cfg.enabled || !m_macroOn || m_finished || !pl) return;
+        const int f = this->frameNow(pl);
+        if (f < kLethalIgnoreFrames) return;
+        if (!m_lethal.empty() && f < m_lethal.back()) m_lethal.clear();  // el tiempo retrocedio
+        if (m_lethal.empty() || m_lethal.back() != f) m_lethal.push_back(f);
+        if (m_lethal.size() > kLethalCap) {
+            m_lethal.erase(m_lethal.begin(), m_lethal.begin() + static_cast<std::ptrdiff_t>(kLethalCap / 2));
+        }
+    }
+
     // Se llama cada frame: refresca el tiempo actual, juzga y redibuja.
     void update(float dt) override {
         auto pl = PlayLayer::get();
@@ -1807,20 +1950,17 @@ public:
             this->applyConfig(false);
         }
         this->syncLevelVisibility();
-        if (!m_cfg.enabled) return;
+
+        if (m_box && m_clock >= m_labelDieAt) this->clearJudgmentBox();
+        if (!m_cfg.enabled || !m_macroOn) return;
 
         const double levelTime = currentLevelTime(pl);
         // juicio: cuadros enteros, sin Desfase
-        if (!m_finished) this->advanceJudge(this->stepFrame(levelTime));
+        if (!m_finished) this->advanceJudge(this->frameNow(pl));
         // dibujo: con Desfase visual (positivo = las notas llegan mas tarde)
         const double nowV = levelTime - m_cfg.offset;
         m_lastVis = nowV;
         if (this->isVisible()) this->refresh(nowV);
-
-        if (m_label && m_clock >= m_labelDieAt) {
-            m_label->removeFromParent();
-            m_label = nullptr;
-        }
     }
 
     // Nuevo intento (muerte / reinicio / checkpoint): se descongela el juicio.
@@ -1833,10 +1973,11 @@ public:
     // PlayLayer::levelComplete: congela las estadisticas y abre los resultados por encima
     // de la pantalla de nivel completado.
     void onLevelComplete() {
-        if (!m_cfg.enabled || m_finished) return;
+        if (!m_cfg.enabled || m_finished || !m_macroOn) return;
         m_finished = true;
         m_active = kNone;
-        if (m_stats.total() == 0) return;
+        this->drainQueue(m_lastFrame, true);  // los Temprano / Tarde pendientes se resuelven ya
+        if (m_stats.shown() == 0) return;
 
         this->stopActionByTag(kResultsTag);
         auto seq = CCSequence::create(CCDelayTime::create(kResultsDelay),
@@ -1879,15 +2020,25 @@ private:
         return currentLevelPercent(PlayLayer::get());
     }
 
-    // Tiempo de fisica -> cuadro entero. Es el UNICO punto de conversion del juicio.
-    int stepFrame(double levelTime) const {
-        return static_cast<int>(std::llround(levelTime * m_fps)) + kInputFrameBias;
+    // Cuadro entero actual. Es el UNICO punto de conversion del juicio.
+    //
+    // Los bots escriben en la macro el contador de pasos de fisica (m_currentProgress). Leer en
+    // cambio m_levelTime * fps dentro de handleButton daba un cuadro de mas en los pulsares
+    // (el tiempo ya esta adelantado un paso), y por eso los bots salian "Perfecto+!". Se usa el
+    // contador de pasos cuando concuerda con el tiempo del nivel; si no (otro tps, checkpoint,
+    // fps de macro distintos) se vuelve al cuadro por tiempo.
+    int frameNow(PlayLayer* pl) const {
+        const int byTime = static_cast<int>(std::llround(currentLevelTime(pl) * m_fps));
+        const int step = physicsStep(pl);
+        const int f = std::abs(step - byTime) <= kStepTolerance ? step : byTime;
+        return f + kInputFrameBias;
     }
 
     void setMacro(rpb::Macro macro, double fps) {
         m_macro = std::move(macro);
         m_fps = fps > 0.0 ? fps : 240.0;
         m_outer = std::max(1, static_cast<int>(std::llround(kOuterWin * m_fps)));
+        m_lethalAfter = std::max(1, static_cast<int>(std::llround(kSurviveAfterSec * m_fps)));
 
         m_clicks.clear();
         m_clicks.reserve(m_macro.clicks.size());
@@ -1901,11 +2052,53 @@ private:
             c.release = c.hasRel ? NotePending : NoteSkipped;
             m_clicks.push_back(c);
         }
+        m_macroOn = !m_clicks.empty();
         m_pCursor = 0;
         m_rCursor = 0;
         m_active = kNone;
+        m_finished = false;
+        m_queue.clear();
+        m_lethal.clear();
         m_trail.clear();
         m_synced = false;
+    }
+
+    // Macro Toggle: deja la barra sin macro. Se corta la lluvia de notas, se limpian los holds en
+    // vivo (rastro, destellos, cartel, combo, marcadores) y se borran las estadisticas.
+    void clearMacro() {
+        m_macro = rpb::Macro{};
+        m_clicks.clear();
+        m_pCursor = 0;
+        m_rCursor = 0;
+        m_active = kNone;
+        m_macroOn = false;
+        m_finished = false;
+        m_synced = false;
+        m_stats.reset();
+        m_queue.clear();
+        m_lethal.clear();
+        m_trail.clear();
+        this->stopActionByTag(kResultsTag);
+        this->clearJudgmentBox();
+
+        for (auto n : m_pool) n->setVisible(false);
+        m_used = 0;
+
+        if (m_flashG) {
+            m_flashG->stopAllActions();
+            m_flashG->setOpacity(0);
+        }
+        if (m_line) {
+            m_line->stopAllActions();
+            m_line->setColor(kColWhite);
+        }
+        for (auto mk : {m_markP, m_markH}) {
+            if (mk) {
+                mk->stopAllActions();
+                mk->setOpacity(0);
+            }
+        }
+        this->updateComboLabel(false);  // combo en 0: se oculta
     }
 
     // ---- modo experimento (detalle) ----
@@ -2202,35 +2395,110 @@ private:
 
     // ---- juicio ----
 
+    void clearJudgmentBox() {
+        if (m_box) m_box->removeFromParent();
+        m_box = nullptr;
+        m_label = nullptr;
+    }
+
+    // El cartel vive dentro de un contenedor (m_box) que es el que sube: asi el check de un
+    // acierto salvado, que se agrega unos cuadros despues, sube pegado al texto.
     void spawnJudgment(Judge j) {
         const auto st = styleOf(j);
-        if (m_label) {
-            m_label->removeFromParent();
-            m_label = nullptr;
-        }
+        this->clearJudgmentBox();
+
+        m_box = CCNode::create();
+        m_box->setPosition({m_hudX, m_textY});
+        this->addChild(m_box, 10);
+
         m_label = CCLabelBMFont::create(st.text, "bigFont.fnt");
         m_label->setColor(st.color);
         m_label->setScale(0.3f);
-        m_label->setPosition({m_hudX, m_textY});
-        this->addChild(m_label, 10);
+        m_box->addChild(m_label);
 
         CCFiniteTimeAction* grow = CCEaseBackOut::create(CCScaleTo::create(0.14f, 0.55f));
-        CCFiniteTimeAction* rise = CCEaseOut::create(CCMoveBy::create(0.70f, {0.f, 26.f}), 2.f);
         CCFiniteTimeAction* fade = CCSequence::create(CCDelayTime::create(0.40f),
                                                       CCFadeOut::create(0.30f), nullptr);
-        m_label->runAction(CCSpawn::create(grow, rise, fade, nullptr));
+        m_label->runAction(CCSpawn::create(grow, fade, nullptr));
+        m_box->runAction(CCEaseOut::create(CCMoveBy::create(0.70f, {0.f, 26.f}), 2.f));
         m_labelDieAt = m_clock + 0.75;
     }
 
-    // Registra un juicio con frames de diferencia: estadisticas, cartel, combo y mini-barra.
-    // El combo acumula Excelente! / Perfecto+! / Perfecto! y solo se corta con Temprano / Tarde / Fallo!
-    // (esa regla vive en RunStats::add).
-    void registerJudge(Judge j, int frames, bool isPress) {
-        const uint32_t before = m_stats.combo;
-        m_stats.add(j, this->percentNow());
+    // Check verde al lado de un Temprano / Tarde salvado. Solo si ese cartel sigue en pantalla.
+    void attachCheck(CCNode* box, CCLabelBMFont* label) {
+        if (!box || !label || box != m_box || !box->getParent()) return;
+
+        auto holder = CCNode::create();
+        holder->addChild(makeCheckMark(15.f));
+        const float halfW = label->getContentSize().width * 0.55f * 0.5f;  // escala final del cartel
+        holder->setPosition({halfW + 12.f, 0.f});
+        holder->setScale(0.f);
+        const float life = static_cast<float>(std::max(0.0, m_labelDieAt - m_clock - 0.25));
+        holder->runAction(CCSequence::create(CCEaseBackOut::create(CCScaleTo::create(0.12f, 1.f)),
+                                             CCDelayTime::create(life), CCScaleTo::create(0.2f, 0.f),
+                                             nullptr));
+        box->addChild(holder, 2);
+    }
+
+    // Una colision letal de la hitbox real cae dentro de [lo, hi]?
+    bool lethalInWindow(int lo, int hi) const {
+        const auto it = std::lower_bound(m_lethal.begin(), m_lethal.end(), lo);
+        return it != m_lethal.end() && *it <= hi;
+    }
+
+    // Aplica a las estadisticas, EN ORDEN, los juicios que ya se pueden resolver.
+    //  - normal (Excelente! / Perfecto+! / Perfecto! / Fallo!): entra enseguida.
+    //  - Temprano / Tarde: espera hasta pasada su ventana (o a force). Sin colision letal en la
+    //    ventana = salvado: no toca combo ni precision y lleva un check. Con colision = cuenta normal.
+    void drainQueue(int nowF, bool force) {
+        bool changed = false;
+        bool pulse = false;
+        while (!m_queue.empty()) {
+            auto& q = m_queue.front();
+            if (q.defer && !force && nowF <= q.hi) break;  // aun no se sabe si habria muerto
+
+            const uint32_t before = m_stats.combo;
+            if (q.defer && !this->lethalInWindow(q.lo, q.hi)) {
+                m_stats.addSurvived(q.j);
+                this->attachCheck(q.box.data(), q.label.data());
+            } else {
+                m_stats.add(q.j, q.pct);
+            }
+            if (m_stats.combo > before) pulse = true;
+            changed = true;
+            m_queue.pop_front();
+        }
+        if (changed) this->updateComboLabel(pulse);
+    }
+
+    void queueMiss(int nowF, float pct) {
+        QueuedJudge q;
+        q.j = Judge::Miss;
+        q.pct = pct;
+        m_queue.push_back(std::move(q));
+        this->drainQueue(nowF, false);
+    }
+
+    // Registra un juicio con frames de diferencia: cartel y mini-barra al instante; estadisticas,
+    // combo y salvados a traves de la cola (ver drainQueue). El combo acumula Excelente! /
+    // Perfecto+! / Perfecto! y solo se corta con Temprano / Tarde / Fallo! (regla en RunStats::add).
+    void registerJudge(Judge j, int frames, bool isPress, int curFrame) {
         this->spawnJudgment(j);
-        this->updateComboLabel(m_stats.combo > before);
         this->placeMarker(isPress ? m_markP : m_markH, frames, isPress);
+
+        QueuedJudge q;
+        q.j = j;
+        q.pct = this->percentNow();
+        if (j == Judge::Early || j == Judge::Late) {
+            const int ideal = curFrame - frames;  // cuadro que habria sido exacto
+            q.defer = true;
+            q.lo = std::min(curFrame, ideal) - kLethalBeforeFrames;
+            q.hi = std::max(curFrame, ideal) + m_lethalAfter;
+            q.box = Ref<CCNode>(m_box);
+            q.label = Ref<CCLabelBMFont>(m_label);
+        }
+        m_queue.push_back(std::move(q));
+        this->drainQueue(curFrame, false);
     }
 
     // Pulsar: busca el clic pendiente mas cercano dentro de la ventana exterior y compara CUADROS
@@ -2258,7 +2526,8 @@ private:
         m_active = best;
 
         const int d = f - c.sF;
-        this->registerJudge(classifyFrames(d), d, true);
+        log::debug("Rhythm Bar: pulsar cuadro={} macro={} dif={}", f, c.sF, d);
+        this->registerJudge(classifyFrames(d), d, true, f);
     }
 
     // Soltar: SOLO para holds largos explicitos de la macro. Compara la DURACION del hold del
@@ -2276,7 +2545,7 @@ private:
         const int macroHold = c.eF - c.sF;
         const int d = playerHold - macroHold;
         c.release = NoteHit;
-        this->registerJudge(classifyFrames(d), d, false);
+        this->registerJudge(classifyFrames(d), d, false, f);
     }
 
     // Tiempo expirado sin accion = Fallo. Devuelve cuantos fallos nuevos hubo.
@@ -2292,7 +2561,7 @@ private:
             if (c.press == NotePending) {
                 c.press = NoteMissed;
                 if (c.hasRel) c.release = NoteSkipped;
-                m_stats.add(Judge::Miss, pct);
+                this->queueMiss(nowF, pct);
                 ++missed;
             }
             ++m_pCursor;
@@ -2305,7 +2574,7 @@ private:
                 const int deadline = c.pF + (c.eF - c.sF) + m_outer;
                 if (nowF > deadline) {
                     c.release = NoteMissed;
-                    m_stats.add(Judge::Miss, pct);
+                    this->queueMiss(nowF, pct);
                     ++missed;
                 }
             }
@@ -2332,8 +2601,16 @@ private:
             const bool practice = pl && pl->m_isPracticeMode;
             resetStats = !practice;
         }
-        if (resetStats) m_stats.reset();
-        else m_stats.combo = 0;
+        if (resetStats) {
+            m_queue.clear();
+            m_stats.reset();
+        } else {
+            // se conservan las estadisticas: los Temprano / Tarde pendientes se resuelven con lo
+            // que se alcanzo a ver (una muerte real deja su colision letal registrada)
+            this->drainQueue(m_lastFrame, true);
+            m_stats.combo = 0;
+        }
+        m_lethal.clear();
         this->updateComboLabel(false);
 
         const auto it = std::lower_bound(m_clicks.begin(), m_clicks.end(), nowF - m_outer,
@@ -2374,6 +2651,7 @@ private:
         m_lastFrame = nowF;
 
         const int missed = this->expire(nowF);
+        this->drainQueue(nowF, false);  // resuelve los Temprano / Tarde cuya ventana ya paso
         if (missed > 0) {
             this->spawnJudgment(Judge::Miss);  // un solo cartel por frame
             this->updateComboLabel(false);     // el Fallo ya reinicio el combo en m_stats
@@ -2382,7 +2660,7 @@ private:
 
     // Resultados (se abre unos segundos despues de levelComplete, encima de la pantalla de fin).
     void openResults() {
-        if (!m_finished || m_stats.total() == 0) return;
+        if (!m_finished || m_stats.shown() == 0) return;
         const auto name = asciiOnly(pathToUtf8(utf8ToPath(m_cfg.macroFile).filename()), 30);
         if (auto popup = RhythmResultsPopup::create(m_stats, name)) {
             popup->show();
@@ -2518,30 +2796,32 @@ private:
     void refresh(double now) {
         m_used = 0;
 
-        const double from = now - this->tailSeconds();
-        const double to = now + m_cfg.lookahead;
+        if (m_macroOn) {
+            const double from = now - this->tailSeconds();
+            const double to = now + m_cfg.lookahead;
 
-        // clics de P1 visibles (ordenados por inicio y por fin: un solo boton, no se solapan)
-        const auto it1 = std::lower_bound(m_clicks.begin(), m_clicks.end(), from,
-                                          [](Click const& c, double v) { return c.end < v; });
-        const size_t a1 = static_cast<size_t>(it1 - m_clicks.begin());
-        // clics de P2 visibles (los que todavia no terminaron)
-        auto const& c2 = m_macro.clicks2;
-        const auto it2 = std::lower_bound(c2.begin(), c2.end(), now,
-                                          [](rpb::Hold const& h, double v) { return h.end < v; });
-        const size_t a2 = static_cast<size_t>(it2 - c2.begin());
+            // clics de P1 visibles (ordenados por inicio y por fin: un solo boton, no se solapan)
+            const auto it1 = std::lower_bound(m_clicks.begin(), m_clicks.end(), from,
+                                              [](Click const& c, double v) { return c.end < v; });
+            const size_t a1 = static_cast<size_t>(it1 - m_clicks.begin());
+            // clics de P2 visibles (los que todavia no terminaron)
+            auto const& c2 = m_macro.clicks2;
+            const auto it2 = std::lower_bound(c2.begin(), c2.end(), now,
+                                              [](rpb::Hold const& h, double v) { return h.end < v; });
+            const size_t a2 = static_cast<size_t>(it2 - c2.begin());
 
-        // 1) cuerpos de hold P1  2) cuerpos de hold P2 (encima)  3) contenedores P1  4) contenedores P2
-        for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
-            this->drawHoldP1(m_clicks[i], now);
+            // 1) cuerpos de hold P1  2) cuerpos de hold P2 (encima)  3) contenedores P1  4) contenedores P2
+            for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
+                this->drawHoldP1(m_clicks[i], now);
+            }
+            for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawHoldP2(c2[i], now);
+            for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
+                this->drawEndsP1(m_clicks[i], from, now);
+            }
+            for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawEndsP2(c2[i], now);
+
+            this->drawTrail(now);
         }
-        for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawHoldP2(c2[i], now);
-        for (size_t i = a1; i < m_clicks.size() && m_clicks[i].start <= to; ++i) {
-            this->drawEndsP1(m_clicks[i], from, now);
-        }
-        for (size_t i = a2; i < c2.size() && c2[i].start <= to; ++i) this->drawEndsP2(c2[i], now);
-
-        this->drawTrail(now);
 
         for (size_t i = m_used; i < m_pool.size(); ++i) m_pool[i]->setVisible(false);
     }
@@ -2568,10 +2848,14 @@ RhythmBar* ensureBar(PlayLayer* pl, bool forceNew = false) {
         return nullptr;
     }
 
-    // La barra se crea aunque la macro falle: asi se puede elegir otra desde el popup.
-    auto res = loadMacro(cfg);
-    if (!res.ok) {
-        Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
+    // La barra se crea aunque la macro falle (o este desactivada): asi se puede elegir otra
+    // desde el popup. Con la macro desactivada no se carga nada ni se avisa.
+    LoadResult res;
+    if (cfg.macroActive) {
+        res = loadMacro(cfg);
+        if (!res.ok) {
+            Notification::create("Rhythm Bar: " + res.error, res.icon)->show();
+        }
     }
 
     auto bar = RhythmBar::create(std::move(res.macro), res.fps, cfg);
@@ -2596,11 +2880,13 @@ RhythmBar* ensureBar(PlayLayer* pl, bool forceNew = false) {
 //
 // Tamano 420 x 300 (la pantalla de GD mide 320 de alto). Posiciones (dx, dy) desde el centro.
 //
-//   columna izquierda:  x de -198 a  0     (6 ajustes con - / +  +  fila de Direccion con < / >)
+//   boton de cerrar:    dentro del marco, esquina superior izquierda (-194, +134), escala 0.62
+//   columna izquierda:  x de -196 a -5  (6 ajustes + Direccion, una sola grilla):
+//                         etiqueta -196..-116 | boton - en -96 | valor en -56 | boton + en -16
 //   separador vertical: x = +9
 //   columna derecha:    x de  +20 a +196   (biblioteca de macros, centro en +108; casilla Mini-Barra)
 //   fila de abajo:      Restablecer, Modo Experimento, Ocultar Barra
-//   al final:           agregar macro por nombre + macro activa
+//   al final:           cuadro de macro (borrar = desactivar) + macro activa
 
 class RhythmPopup : public RhythmPopupBase {
 protected:
@@ -2610,8 +2896,16 @@ protected:
 
     // filas de ajustes (columna izquierda) y de la lista (columna derecha)
     static constexpr float kRowY0 = 88.f;
-    static constexpr float kRowDY = 21.f;
+    static constexpr float kRowDY = 20.f;
     static constexpr float kRightCX = 108.f;
+
+    // grilla de la columna izquierda
+    static constexpr float kLabelX = -196.f;   // inicio (ancla izquierda) de las etiquetas
+    static constexpr float kLabelW = 80.f;     // ancho maximo de una etiqueta
+    static constexpr float kMinusX = -96.f;    // centro del boton "-" / "<"
+    static constexpr float kValueX = -56.f;    // centro del valor
+    static constexpr float kValueW = 40.f;     // ancho maximo del valor
+    static constexpr float kPlusX = -16.f;     // centro del boton "+" / ">"
 
     CCLabelBMFont* m_values[kRowCount] = {};
     CCLabelBMFont* m_dirValue = nullptr;
@@ -2621,6 +2915,7 @@ protected:
     CCMenuItemToggler* m_hideToggle = nullptr;
     CCMenuItemToggler* m_miniToggle = nullptr;
     TextInput* m_input = nullptr;
+    bool m_inputSilent = false;  // true = el cambio del texto lo hace el popup (no desactiva la macro)
     std::vector<CCNode*> m_listNodes;
     std::vector<std::string> m_library;
     size_t m_page = 0;
@@ -2636,9 +2931,23 @@ protected:
         return toggle;
     }
 
+    // Flecha chica (-, +, <, >) de la grilla de ajustes.
+    CCMenuItemSpriteExtra* addArrow(char const* caption, float dx, float dy, SEL_MenuHandler cb, int tag) {
+        return this->addButton(caption, 22, true, dx, dy, cb, tag, 18.f, 0.5f);
+    }
+
+    // Cambia el texto del cuadro de macro sin que cuente como "el jugador lo borro".
+    void setInputSilently(std::string const& text) {
+        if (!m_input) return;
+        m_inputSilent = true;
+        m_input->setString(text);
+        m_inputSilent = false;
+    }
+
     bool init() {
         if (!Popup::init(kPopupW, kPopupH)) return false;
         this->setTitle("Barra de Ritmo");
+        this->tidyCloseButton(kPopupW, kPopupH);
 
         const CCPoint center{0.5f, 0.5f};
         const CCPoint leftAnchor{0.f, 0.5f};
@@ -2654,20 +2963,18 @@ protected:
         this->addLabel("Ajustes (tiempo real)", -100.f, 108.f, 0.35f, center, kColGold);
         for (size_t i = 0; i < kRowCount; ++i) {
             const float y = kRowY0 - kRowDY * static_cast<float>(i);
-            fitLabel(this->addLabel(kRows[i].label, -198.f, y, 0.34f, leftAnchor), 0.34f, 80.f);
-            this->addButton("-", 26, true, -98.f, y, menu_selector(RhythmPopup::onStep),
-                            static_cast<int>(i) * 2, 20.f);
-            m_values[i] = this->addLabel("", -56.f, y, 0.38f);
-            this->addButton("+", 26, true, -14.f, y, menu_selector(RhythmPopup::onStep),
-                            static_cast<int>(i) * 2 + 1, 20.f);
+            fitLabel(this->addLabel(kRows[i].label, kLabelX, y, 0.3f, leftAnchor), 0.3f, kLabelW);
+            this->addArrow("-", kMinusX, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2);
+            m_values[i] = this->addLabel("", kValueX, y, 0.34f);
+            this->addArrow("+", kPlusX, y, menu_selector(RhythmPopup::onStep), static_cast<int>(i) * 2 + 1);
         }
-        // direccion en la que corren las notas (siguiente fila de la columna izquierda)
+        // direccion en la que corren las notas: misma grilla que el resto de las filas
         {
             const float y = kRowY0 - kRowDY * static_cast<float>(kRowCount);
-            fitLabel(this->addLabel("Direccion", -198.f, y, 0.34f, leftAnchor), 0.34f, 80.f);
-            this->addButton("<", 26, true, -98.f, y, menu_selector(RhythmPopup::onDir), 0, 20.f);
-            m_dirValue = this->addLabel("", -56.f, y, 0.34f);
-            this->addButton(">", 26, true, -14.f, y, menu_selector(RhythmPopup::onDir), 1, 20.f);
+            fitLabel(this->addLabel("Direccion", kLabelX, y, 0.3f, leftAnchor), 0.3f, kLabelW);
+            this->addArrow("<", kMinusX, y, menu_selector(RhythmPopup::onDir), 0);
+            m_dirValue = this->addLabel("", kValueX, y, 0.3f);
+            this->addArrow(">", kPlusX, y, menu_selector(RhythmPopup::onDir), 1);
         }
 
         // ---- columna derecha: biblioteca de macros ----
@@ -2690,17 +2997,26 @@ protected:
         m_hideToggle = this->addToggle(menu_selector(RhythmPopup::onHideBar), 58.f, -62.f,
                                        hideBarSetting(), "Ocultar Barra", 74.f, 110.f);
 
-        // ---- agregar una macro escribiendo solo su nombre ----
-        this->addLabel("Agregar macro por nombre (vacio = la activa)", 0.f, -86.f, 0.3f, center, kColGold);
+        // ---- macro por nombre: el cuadro muestra la macro activa; borrar el texto la desactiva ----
+        this->addLabel("Macro (borrar el texto = desactivar)", 0.f, -86.f, 0.3f, center, kColGold);
         m_input = TextInput::create(260.f, "ej: macro.gdr2", "bigFont.fnt");
         m_input->setFilter(
             "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ._-()[]+,'&!#@%=/\\:");
         m_input->setMaxCharCount(120);
         m_input->setPosition(this->at(m_mainLayer, -62.f, -108.f));
+        m_input->setCallback([this](std::string const& text) { this->onInputChanged(text); });
         m_mainLayer->addChild(m_input, 5);
         this->addButton("Agregar", 90, true, 140.f, -108.f, menu_selector(RhythmPopup::onAdd), 0, 26.f);
 
         m_activeLabel = this->addLabel("", 0.f, -134.f, 0.32f);
+
+        // el cuadro arranca con el nombre de la macro activa (si hay una)
+        {
+            const auto cfg = loadConfig();
+            if (cfg.macroActive) {
+                this->setInputSilently(pathToUtf8(utf8ToPath(cfg.macroFile).filename()));
+            }
+        }
 
         this->refreshValues();
         this->rebuildList();
@@ -2711,11 +3027,11 @@ protected:
         for (size_t i = 0; i < kRowCount; ++i) {
             const auto v = rowValue(kRows[i]);
             m_values[i]->setString((std::to_string(v) + kRows[i].suffix).c_str());
-            fitLabel(m_values[i], 0.38f, 44.f);
+            fitLabel(m_values[i], 0.34f, kValueW);
         }
         if (m_dirValue) {
             m_dirValue->setString(kDirNames[dirSetting()]);
-            fitLabel(m_dirValue, 0.34f, 56.f);
+            fitLabel(m_dirValue, 0.3f, kValueW);
         }
     }
 
@@ -2724,11 +3040,19 @@ protected:
         if (!RhythmBar::instance()) {
             m_activeLabel->setString(("Barra no creada: " + asciiOnly(g_barStatus, 38)).c_str());
             m_activeLabel->setColor(kColRed);
+            fitLabel(m_activeLabel, 0.32f, 390.f);
             return;
         }
-        const auto name = asciiOnly(pathToUtf8(utf8ToPath(loadConfig().macroFile).filename()), 40);
-        m_activeLabel->setString(("Activa: " + name).c_str());
-        m_activeLabel->setColor(kColWhite);
+        const auto cfg = loadConfig();
+        if (!cfg.macroActive) {
+            m_activeLabel->setString("Macro: ninguna (desactivada)");
+            m_activeLabel->setColor(kColGray);
+        } else {
+            const auto name = asciiOnly(pathToUtf8(utf8ToPath(cfg.macroFile).filename()), 40);
+            m_activeLabel->setString(("Activa: " + name).c_str());
+            m_activeLabel->setColor(kColWhite);
+        }
+        fitLabel(m_activeLabel, 0.32f, 390.f);
     }
 
     void rebuildList() {
@@ -2744,8 +3068,7 @@ protected:
         m_page = std::min(m_page, pages - 1);
 
         const auto cfg = loadConfig();
-        const auto activePath = findMacro(cfg.macroFile, false);  // sin recorrer carpetas
-        const auto activeKey = activePath ? pathKey(pathToUtf8(*activePath)) : pathKey(cfg.macroFile);
+        const auto activeKey = activeKeyOf(cfg);  // sin recorrer carpetas
 
         if (m_library.empty()) {
             m_listNodes.push_back(this->addLabel("Sin macros guardadas", kRightCX, kRowY0 - kRowDY, 0.35f));
@@ -2755,7 +3078,8 @@ protected:
             if (i >= m_library.size()) break;
             // 17 caracteres entran dentro del boton (se recorta con "..." si es mas largo)
             const auto name = asciiOnly(pathToUtf8(utf8ToPath(m_library[i]).filename()), 17);
-            const bool active = pathKey(m_library[i]) == activeKey;  // verde = macro activa
+            // verde = macro activa (si esta desactivada, ninguna se marca)
+            const bool active = cfg.macroActive && pathKey(m_library[i]) == activeKey;
             const float y = kRowY0 - kRowDY * static_cast<float>(k);
             m_listNodes.push_back(this->addButton(name.c_str(), 160, active, kRightCX, y,
                                                   menu_selector(RhythmPopup::onPick),
@@ -2853,12 +3177,31 @@ protected:
         this->scheduleToggleSync();
     }
 
+    // Macro Toggle: apaga la macro al instante. La barra deja de dibujar notas, se limpian los
+    // holds en vivo y se borran las estadisticas de esa run.
+    void deactivateMacro(std::string const& message) {
+        setMacroActiveSetting(false);
+        RhythmBar::refreshNow();
+        Notification::create(message, NotificationIcon::Info)->show();
+        this->rebuildList();
+    }
+
+    // Texto del cuadro de macro: si el jugador lo deja vacio (la borra), la macro se desactiva.
+    void onInputChanged(std::string const& text) {
+        if (m_inputSilent) return;
+        if (!rpb::trim(text).empty()) return;
+        if (!macroActiveSetting()) return;
+        this->deactivateMacro("Rhythm Bar: macro desactivada (texto borrado)");
+    }
+
     // Busca la macro por nombre, la valida, la agrega a la biblioteca y la activa al instante.
-    // Con el campo vacio registra la macro que esta activa ahora.
     void onAdd(CCObject*) {
-        std::string name = m_input ? rpb::trim(m_input->getString()) : std::string();
+        const std::string name = m_input ? rpb::trim(m_input->getString()) : std::string();
         const auto cfg = loadConfig();
-        if (name.empty()) name = cfg.macroFile;
+        if (name.empty()) {
+            Notification::create("Rhythm Bar: escribe el nombre de una macro", NotificationIcon::Info)->show();
+            return;
+        }
 
         const auto found = findMacro(name, true, true);
         if (!found) {
@@ -2901,19 +3244,23 @@ protected:
         m_page = index / kPerPage;
 
         setMacroFile(stored);
+        setMacroActiveSetting(true);
         RhythmBar::refreshNow();
-        if (m_input) m_input->setString("");
+        this->setInputSilently(pathToUtf8(found->filename()));
         Notification::create("Rhythm Bar: macro cargada (" +
                                  asciiOnly(pathToUtf8(found->filename()), 30) + ")",
                              NotificationIcon::Success)->show();
         this->rebuildList();
     }
 
-    // Saca la macro activa de la biblioteca (no borra el archivo).
+    // Saca la macro activa de la biblioteca (no borra el archivo) y la desactiva.
     void onRemove(CCObject*) {
         const auto cfg = loadConfig();
-        const auto activePath = findMacro(cfg.macroFile, false);
-        const auto activeKey = activePath ? pathKey(pathToUtf8(*activePath)) : pathKey(cfg.macroFile);
+        if (!cfg.macroActive) {
+            Notification::create("Rhythm Bar: no hay una macro activa", NotificationIcon::Info)->show();
+            return;
+        }
+        const auto activeKey = activeKeyOf(cfg);
 
         auto list = loadLibrary();
         const auto before = list.size();
@@ -2929,15 +3276,26 @@ protected:
             Notification::create("Rhythm Bar: no se pudo guardar la biblioteca", NotificationIcon::Error)->show();
             return;
         }
-        Notification::create("Rhythm Bar: macro quitada de la biblioteca", NotificationIcon::Success)->show();
+        setMacroActiveSetting(false);  // quitada de la biblioteca = desactivada al instante
+        RhythmBar::refreshNow();
+        this->setInputSilently("");
+        Notification::create("Rhythm Bar: macro quitada y desactivada", NotificationIcon::Success)->show();
         this->rebuildList();
     }
 
     // Un clic en una macro de la lista la activa (y la barra la carga al instante).
+    // Macro Toggle: un SEGUNDO clic sobre la macro que ya esta activa la desactiva.
     void onPick(CCObject* sender) {
         const int tag = static_cast<CCNode*>(sender)->getTag();
         if (tag < 0 || static_cast<size_t>(tag) >= m_library.size()) return;
-        const auto& stored = m_library[static_cast<size_t>(tag)];
+        const std::string stored = m_library[static_cast<size_t>(tag)];  // copia: rebuildList cambia m_library
+
+        const auto cfg = loadConfig();
+        if (cfg.macroActive && pathKey(stored) == activeKeyOf(cfg)) {
+            this->setInputSilently("");
+            this->deactivateMacro("Rhythm Bar: macro desactivada");
+            return;
+        }
 
         std::error_code ec;
         if (!fs::exists(utf8ToPath(stored), ec)) {
@@ -2945,7 +3303,9 @@ protected:
             return;
         }
         setMacroFile(stored);
+        setMacroActiveSetting(true);
         RhythmBar::refreshNow();
+        this->setInputSilently(pathToUtf8(utf8ToPath(stored).filename()));
         this->rebuildList();
     }
 
@@ -3004,6 +3364,12 @@ void collectBusyRects(CCNode* space, CCNode* root, CCSize const& win, std::vecto
 // ------------------------------------------------------------- hooks ----
 
 class $modify(RhythmPlayLayer, PlayLayer) {
+    // El hook de destroyPlayer va con prioridad alta (numero bajo = corre antes) para ver la
+    // colision letal aunque un noclip despues decida no llamar al original.
+    static void onModify(auto& self) {
+        (void)self.setHookPriority("PlayLayer::destroyPlayer", kLethalHookPriority);
+    }
+
     bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
         ensureDefaultOffset();  // migracion unica del desfase a v1.50
@@ -3022,14 +3388,24 @@ class $modify(RhythmPlayLayer, PlayLayer) {
         PlayLayer::levelComplete();
         if (auto bar = RhythmBar::instance()) bar->onLevelComplete();
     }
+
+    // Filtro noclip: cada colision letal de la hitbox real (se bloquee o no) queda registrada.
+    // El pico anticheat del nivel no cuenta.
+    void destroyPlayer(PlayerObject* player, GameObject* object) {
+        if (object != m_anticheatSpike) {
+            if (auto bar = RhythmBar::instance()) bar->onLethal(this);
+        }
+        PlayLayer::destroyPlayer(player, object);
+    }
 };
 
 /*
  * Entradas del jugador. pushButton/releaseButton de GJBaseGameLayer solo encolan el clic;
  * el juego lo aplica de verdad en handleButton, dentro del paso de fisica que corresponde,
- * asi que ahi el tiempo (m_levelTime) coincide con el de las macros. PlayLayer hereda este
+ * asi que ahi el contador de pasos coincide con el de las macros. PlayLayer hereda este
  * metodo, por eso el hook va sobre GJBaseGameLayer. Se llama primero al original (el clic ya
- * queda aplicado) y luego se lee m_levelTime del MISMO paso: no hay ningun retardo intermedio.
+ * queda aplicado) y luego se lee el cuadro del MISMO paso (RhythmBar::frameNow): no hay ningun
+ * retardo intermedio.
  */
 class $modify(RhythmBaseGameLayer, GJBaseGameLayer) {
     void handleButton(bool down, int button, bool isPlayer1) {
@@ -3040,7 +3416,7 @@ class $modify(RhythmBaseGameLayer, GJBaseGameLayer) {
         if (!bar) return;
         auto pl = PlayLayer::get();
         if (!pl || static_cast<GJBaseGameLayer*>(pl) != static_cast<GJBaseGameLayer*>(this)) return;
-        bar->onInput(down, currentLevelTime(pl));
+        bar->onInput(down, pl);
     }
 };
 
